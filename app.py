@@ -660,7 +660,18 @@ def _render_duplicates(db):
     # index keys get reused across groups after a delete and desync the browser.
     for group in groups:
         label = group[0].get("title") or group[0].get("doi") or group[0]["url"]
+        group_keys = sorted(normalize_url(p["url"]) for p in group)
         with st.expander(f"{label[:80]}  ({len(group)} URLs)", expanded=True):
+            # Streamlit can't put a widget in the expander's own title bar, so
+            # the dismiss "✕" is the first row instead — top-right corner of
+            # the group's content rather than of the header itself.
+            corner = st.columns([10, 1])
+            if corner[1].button("✕", key=f"dismiss::{'|'.join(group_keys)}",
+                                help="Not a duplicate — keep both and stop "
+                                     "flagging this group"):
+                db.dismiss_duplicate_group(group_keys)
+                st.toast("Dismissed. Won't be flagged again unless the group changes.")
+                st.rerun()
             for p in group:
                 cols = st.columns([6, 1])
                 cols[0].markdown(f"[{p['url']}]({p['url']})")

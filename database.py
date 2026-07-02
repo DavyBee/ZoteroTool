@@ -311,11 +311,15 @@ def _settings_conn():
     return _connect(str(config.DB_PATH))
 
 
-def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
+def get_setting(key: str, default: Optional[str] = None,
+                 db_path: Optional[str] = None) -> Optional[str]:
     """Read a persisted setting. Never raises — returns `default` if the table,
-    row, or database isn't reachable (e.g. first run, or Turso briefly down)."""
+    row, or database isn't reachable (e.g. first run, or Turso briefly down).
+    db_path defaults to config.DB_PATH; pass a specific Database's db_path for
+    settings that should live alongside that library rather than globally
+    (e.g. a test's isolated tmp_path DB)."""
     try:
-        conn = _settings_conn()
+        conn = _connect(db_path) if db_path else _settings_conn()
         try:
             _ensure_schema(conn)
             row = conn.execute(
@@ -327,10 +331,11 @@ def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
         return default
 
 
-def set_setting(key: str, value: str) -> None:
+def set_setting(key: str, value: str, db_path: Optional[str] = None) -> None:
     """Persist a setting. DELETE+INSERT rather than UPSERT so the local sqlite3
-    and hosted libsql paths behave identically (same reason as save())."""
-    conn = _settings_conn()
+    and hosted libsql paths behave identically (same reason as save()). See
+    get_setting for db_path."""
+    conn = _connect(db_path) if db_path else _settings_conn()
     try:
         conn.execute("DELETE FROM settings WHERE key = ?", (key,))
         conn.execute(
@@ -338,6 +343,22 @@ def set_setting(key: str, value: str) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+# ── Dismissed duplicate groups ─────────────────────────────────────────────────
+# A lab member can decide two papers that share a DOI/title are NOT actually the
+# same work (e.g. an article and its erratum) and dismiss that pairing instead of
+# deleting either one. Stored as one settings row, in the SAME db_path as the
+# papers (Database methods below), not the global config.DB_PATH — keeps a
+# test's isolated tmp_path DB isolated too, and keeps the dismissal with the
+# library it applies to. Value is a JSON list of the exact key sets dismissed.
+# Signature is the group's normalized keys at dismiss time — if the group's
+# membership later changes (a new paper joins), it's a different signature and
+# will surface again, which is the right call: nobody has reviewed that new
+# member yet. Stale signatures (all members long deleted) just sit inert in the
+# list rather than being pruned — not worth a write-back on every read.
+
+_DISMISSED_DUPLICATES_KEY = "dismissed_duplicate_groups"
 
 
 def _paper_row(key: str, p: "Paper") -> tuple:
@@ -701,6 +722,27 @@ class Database:
         self.update_paper(key, zotero_key=zotero_key, uploaded_at=_now(),
                           upload_error=None)
 
+    def get_dismissed_duplicate_groups(self) -> set[frozenset[str]]:
+        """Never raises — returns an empty set on any read/parse failure, same
+        self-healing default as get_setting."""
+        raw = get_setting(_DISMISSED_DUPLICATES_KEY, db_path=self.db_path)
+        if not raw:
+            return set()
+        try:
+            return {frozenset(group) for group in json.loads(raw)}
+        except Exception:
+            return set()
+
+    def dismiss_duplicate_group(self, keys: list[str]) -> None:
+        """Mark this exact set of normalized keys as reviewed-and-not-a-duplicate,
+        so find_duplicate_groups stops surfacing it. Does not touch the papers
+        themselves."""
+        dismissed = self.get_dismissed_duplicate_groups()
+        dismissed.add(frozenset(keys))
+        set_setting(_DISMISSED_DUPLICATES_KEY,
+                    json.dumps([sorted(g) for g in dismissed]),
+                    db_path=self.db_path)
+
     def all_papers(self) -> list[Paper]:
         return list(self._papers.values())
 
@@ -729,6 +771,10 @@ class Database:
         citable duplicate of that paper and is skipped here. (Some older tweet
         records still carry stale title/DOI from before they were blanked; this
         keeps them from colliding with the real paper in the Duplicates tab.)
+
+        Groups the user has explicitly dismissed as "not a duplicate" (see
+        dismiss_duplicate_group) are excluded, unless the group's membership
+        has changed since the dismissal.
         """
         from url_expander import is_tweet_url
 
@@ -766,6 +812,11 @@ class Database:
         for title, group in by_title.items():
             if len(group) >= 2:
                 groups.append(group)
+
+        dismissed = self.get_dismissed_duplicate_groups()
+        if dismissed:
+            groups = [g for g in groups
+                      if frozenset(normalize_url(p["url"]) for p in g) not in dismissed]
 
         return groups
 

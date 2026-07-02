@@ -118,6 +118,35 @@ def test_tweets_are_never_duplicates(db):
     assert db.find_duplicate_groups() == []
 
 
+def test_dismissed_duplicate_group_is_not_resurfaced(db):
+    k1 = add(db, "https://a.example/x", title="Eviction and Children",
+              metadata_source="llm")
+    k2 = add(db, "https://b.example/y", title="eviction and children!",
+              metadata_source="llm")
+    groups = db.find_duplicate_groups()
+    assert len(groups) == 1
+    db.dismiss_duplicate_group([k1, k2])
+    assert db.find_duplicate_groups() == []
+    # Both papers are untouched — dismissal doesn't delete anything.
+    assert db.get_paper("https://a.example/x") is not None
+    assert db.get_paper("https://b.example/y") is not None
+
+
+def test_dismissal_does_not_suppress_a_group_that_gains_a_new_member(db):
+    k1 = add(db, "https://a.example/x", title="Eviction and Children",
+              metadata_source="llm")
+    k2 = add(db, "https://b.example/y", title="eviction and children!",
+              metadata_source="llm")
+    db.dismiss_duplicate_group([k1, k2])
+    assert db.find_duplicate_groups() == []
+    # A third paper with the same title joins — new signature, not covered by
+    # the old dismissal, so the (now 3-paper) group should resurface.
+    add(db, "https://c.example/z", title="Eviction and Children!!",
+        metadata_source="llm")
+    groups = db.find_duplicate_groups()
+    assert len(groups) == 1 and len(groups[0]) == 3
+
+
 # ── Metadata-source taxonomy (single source of truth in database.py) ────────────
 
 def test_taxonomy_constants_are_consistent():
