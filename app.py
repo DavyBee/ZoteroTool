@@ -15,7 +15,6 @@ that shows the seven user-facing states computed fresh from the live DB.
 from __future__ import annotations
 
 import os
-import re
 import tempfile
 from datetime import datetime
 
@@ -24,7 +23,7 @@ import streamlit as st
 import app_helpers as H
 import config
 import zotero_client
-from database import DatabaseError, normalize_url, _is_real_doi
+from database import DatabaseError, normalize_url
 
 st.set_page_config(page_title="Slack to Zotero", page_icon="", layout="wide")
 
@@ -651,29 +650,6 @@ def tab_review(db):
         _render_duplicates(db)
 
 
-def _dup_match_reason(group: list) -> str:
-    """Which field(s) this group actually agrees on, for display next to the
-    URL count. Mirrors the normalization find_duplicate_groups itself uses,
-    so the label matches why the group was flagged."""
-    dois = {(p.get("doi") or "").strip().lower() for p in group}
-    same_doi = len(dois) == 1 and _is_real_doi(next(iter(dois)))
-
-    def _norm_title(t):
-        t = re.sub(r"[^\w\s]", "", (t or "").strip().lower())
-        return re.sub(r"\s+", " ", t).strip()
-
-    titles = {_norm_title(p.get("title")) for p in group}
-    same_title = len(titles) == 1 and next(iter(titles)) != ""
-
-    if same_doi and same_title:
-        return "Shares Title and DOI"
-    if same_doi:
-        return "Shares DOI"
-    if same_title:
-        return "Shares Title"
-    return "Possible duplicate"
-
-
 def _render_duplicates(db):
     groups = db.find_duplicate_groups()
     if not groups:
@@ -694,8 +670,7 @@ def _render_duplicates(db):
             db.dismiss_duplicate_group(group_keys)
             st.toast("Dismissed. Won't be flagged again unless the group changes.")
             st.rerun()
-        reason = _dup_match_reason(group)
-        with box, st.expander(f"{label[:80]}  ({len(group)} URLs) ({reason})", expanded=True):
+        with box, st.expander(f"{label[:80]}  ({len(group)} URLs)", expanded=True):
             for p in group:
                 cols = st.columns([6, 1])
                 cols[0].markdown(f"[{p['url']}]({p['url']})")
