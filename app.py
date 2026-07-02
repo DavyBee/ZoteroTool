@@ -666,8 +666,7 @@ def _render_duplicates(db):
         # header, instead of taking a row inside the box.
         gutter, box = st.columns([1, 20], vertical_alignment="center")
         if gutter.button("✕", key=f"dismiss::{'|'.join(group_keys)}",
-                         help="Not a duplicate — keep both and stop flagging "
-                              "this group"):
+                         help="Keep both, dismiss the duplicate notification"):
             db.dismiss_duplicate_group(group_keys)
             st.toast("Dismissed. Won't be flagged again unless the group changes.")
             st.rerun()
