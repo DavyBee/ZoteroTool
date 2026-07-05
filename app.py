@@ -582,6 +582,57 @@ def _open_links_row(papers, sel, key):
         st.toast(f"Opened {n} link(s) in your browser.")
 
 
+def _recheck_sources_ui(db, papers, key):
+    """'Check sources again' for the Access-issues / Likely-junk tabs: re-run
+    enrichment on everything in the tab in case a source that was blocked, down,
+    or private is reachable now (pages re-run the cascade; tweets re-expand).
+    Blocking run with a progress bar, like tweet expansion; the summary banner
+    shows on the next render. One recheck at a time across both tabs — the
+    other tab's button disables while one runs."""
+    flash = st.session_state.pop(f"recheck_result_{key}", None)
+    if flash:
+        st.success(flash)
+    busy = st.session_state.get("rechecking")
+    if st.button(f"🔄 Check {len(papers)} source(s) again", key=key + "_recheck",
+                 disabled=bool(busy) or not papers,
+                 help="Try to reach every source in this tab again and re-run "
+                      "enrichment, in case access is back (a site that was down, "
+                      "a tweet that was private). Recovered items move to Ready / "
+                      "LLM / Links; the rest stay here."):
+        st.session_state.rechecking = key
+        st.rerun()
+    if busy != key:
+        return
+    _undoable(f"Rechecked {len(papers)} source(s)")
+    bar = st.progress(0.0, text=f"Rechecking {len(papers)} source(s)…")
+    try:
+        c = H.recheck_sources(
+            db, papers, config.anthropic_api_key(), str(config.LLM_AUDIT_PATH),
+            progress_cb=lambda d, t: bar.progress(
+                d / max(t, 1), text=f"Rechecked {d}/{t} source(s)…"))
+    finally:
+        # Always release the lock — an exception mid-run must not leave both
+        # tabs' buttons disabled for the rest of the session.
+        st.session_state.rechecking = None
+    bar.empty()
+    worked = c["ok"] + c["llm"] + c["link"] + c["pdf"]
+    msg = (f"{worked} of {len(papers)} check(s) worked — {c['ok']} moved to "
+           f"Ready, {c['llm']} to LLM, {c['link']} to Links.")
+    if c["pdf"]:
+        msg += f" {c['pdf']} saved as PDF only."
+    if c["new"]:
+        msg += (f" {c['new']} new source(s) recovered from tweets — run Enrich "
+                "to process them.")
+    still = c["manual"] + c["non"]
+    if still:
+        msg += f" {still} still couldn't be accessed."
+    if c["fail"]:
+        msg += f" {c['fail']} couldn't be checked (left in place — try later)."
+    st.session_state[f"recheck_result_{key}"] = msg
+    refresh_tables()   # recheck_sources mutated the session db in place + saved
+    st.rerun()
+
+
 def tab_review(db):
     st.subheader("Review & curate")
     st.toggle("✏️ Edit table cells", key="edit_mode",
@@ -609,6 +660,7 @@ def tab_review(db):
     with sub[2]:
         papers = H.triage_papers(db)
         st.caption(f"{len(papers)} had access issues")
+        _recheck_sources_ui(db, papers, "tbl_triage")
         sel = _curate_tab(db, papers, H.promote_links_to_ready, "tbl_triage",
                           rows=H.triage_rows(papers))
         # The dataframe selection survives the Open click (no reload), so the same
@@ -641,6 +693,7 @@ def tab_review(db):
     with sub[4]:
         papers = H.junk_papers(db)
         st.caption(f"{len(papers)} seem to be junk")
+        _recheck_sources_ui(db, papers, "tbl_junk")
         sel = _curate_tab(db, papers, H.promote_links_to_ready, "tbl_junk",
                           rows=H.cull_rows(papers))
         _open_links_row(papers, sel, "tbl_junk")

@@ -439,6 +439,82 @@ def expand_tweets(db: Database, progress_cb=None) -> dict:
             "new_papers": new, "gone": gone, "failed": failed}
 
 
+# ── Recheck sources (retry the Access-issues / Likely-junk queues) ───────────
+# A page that was blocked, down, or private when Enrich first ran may be
+# reachable now. recheck_sources re-runs the normal cascade on an already-
+# classified queue so recovered items sort themselves into Ready / LLM / Links
+# like any fresh enrich — no reset-to-Pending round-trip needed.
+
+def _recheck_tweet(db: Database, p: dict) -> tuple[str, int]:
+    """Re-try a tweet that previously came back deleted/private. Runs the same
+    flow as expand_tweets: readable now → its shared link is added as a new
+    pending source and the tweet itself becomes a plain Links bookmark. Still
+    gone → it stays exactly where it is (unlike expand_tweets we never junk on
+    a transient error — this queue was already triaged once).
+    Returns (outcome category, new pending papers added)."""
+    url = p["url"]
+    status, target = expand_tweet(url)
+    if status == "ok":
+        key, is_new = db.add_paper(target)
+        for c in p.get("comments", []) or []:
+            db.add_comment(key, c)
+        make_plain_link(db, url)
+        db.update_paper(normalize_url(url), tweet_expanded=True, tweet_target=target)
+        return "link", int(is_new)
+    if status == "empty":
+        # Alive again but shares no external link — keep as a plain bookmark.
+        make_plain_link(db, url)
+        db.update_paper(normalize_url(url), tweet_expanded=True, tweet_target=None)
+        return "link", 0
+    if status == "gone":
+        # Still deleted/private — leave it in its current bucket.
+        return ("non" if p.get("metadata_source") == "non_paper" else "manual"), 0
+    return "fail", 0        # transient error — couldn't check; left in place
+
+
+def recheck_sources(db: Database, papers: list[dict], anthropic_key: str | None,
+                    audit_path: str, progress_cb=None) -> dict:
+    """Re-run enrichment on already-classified papers (the Access-issues and
+    Likely-junk tabs) in case access has come back. Tweets go through
+    _recheck_tweet (the cascade short-circuits tweet URLs straight to "link"
+    without ever fetching them, which would move a still-private tweet out of
+    Likely junk unchecked); everything else re-runs the full cascade in place.
+
+    A run that can't classify a paper (LLM API failure, or no key and nothing
+    else resolved) keeps the paper in its CURRENT bucket instead of letting the
+    cascade's metadata_source="none" dump it back to Pending — a recheck must
+    never silently drain a triaged queue into the enrich queue.
+
+    progress_cb(done, total) if given. Saves every 10 papers and at the end
+    (the LLM steps are slow, so a mid-run disconnect shouldn't lose the lot).
+    Returns counts: ok / llm / pdf / link (recovered), manual / non (still
+    unreachable, or reclassified between the two queues), fail (couldn't
+    check — left in place), new (pending sources recovered from tweets)."""
+    counts = {"ok": 0, "llm": 0, "pdf": 0, "link": 0, "manual": 0, "non": 0,
+              "fail": 0, "new": 0}
+    total = len(papers)
+    for i, p in enumerate(papers, 1):
+        url = p["url"]
+        if is_tweet_url(url):
+            category, new = _recheck_tweet(db, p)
+            counts[category] += 1
+            counts["new"] += new
+        else:
+            fields = enrich_paper(p, anthropic_key, audit_path)
+            if fields.get("metadata_source", "none") == "none":
+                fields["metadata_source"] = p.get("metadata_source")
+                counts["fail"] += 1
+            else:
+                counts[_outcome(fields)[0]] += 1
+            db.update_paper(normalize_url(url), **fields)
+        if i % 10 == 0:
+            db.save()
+        if progress_cb:
+            progress_cb(i, total)
+    db.save()
+    return counts
+
+
 # ── Debug-mode pipeline resets ────────────────────────────────────────────────
 # The three most common resets (all-enrichment, uploads, ingest) get dedicated
 # buttons in app.py. DEBUG_ACTIONS holds only the *other* resets, shown in a

@@ -233,3 +233,52 @@ def test_run_enrich_drives_every_pending_paper_once(db, monkeypatch):
     assert len(set(calls)) == 3               # no double-processing (the rerun-race bug)
     assert all(s["counts"]["ok"] <= 3 for s in steps)
     assert all(p["metadata_source"] == "translator" for p in db.all_papers())
+
+
+# ── Recheck sources ("Check sources again" on Access issues / Likely junk) ─────
+
+def test_recheck_moves_recovered_paper_and_keeps_failed_check_in_place(db, monkeypatch):
+    add(db, "https://a.example/recovered", metadata_source="needs_manual")
+    add(db, "https://b.example/still-blocked", metadata_source="needs_manual")
+
+    def fake_enrich(paper, anthropic_key, audit_log_path):
+        if "recovered" in paper["url"]:
+            return {"metadata_source": "translator", "title": "T", "attempts": 1}
+        # An unclassifiable run (LLM API failure / no key) comes back "none".
+        return {"metadata_source": "none",
+                "last_error": "llm: API call failed", "attempts": 1}
+
+    monkeypatch.setattr(app_helpers, "enrich_paper", fake_enrich)
+    counts = app_helpers.recheck_sources(db, app_helpers.triage_papers(db),
+                                         None, "x")
+    assert counts["ok"] == 1 and counts["fail"] == 1
+    assert db.get_paper("https://a.example/recovered")["metadata_source"] == "translator"
+    # A failed check must NOT dump the paper back to Pending — it stays put.
+    assert db.get_paper("https://b.example/still-blocked")["metadata_source"] == "needs_manual"
+
+
+def test_recheck_reexpands_a_junked_tweet_that_is_public_again(db, monkeypatch):
+    # THE motivating case: a tweet that was private (→ Likely junk) is public
+    # now. Rechecking must re-expand it — not run the cascade, whose tweet
+    # short-circuit would blindly mark it a Link without ever checking.
+    tweet = "https://x.com/u/status/1"
+    add(db, tweet, metadata_source="non_paper", tweet_expanded=True)
+    monkeypatch.setattr(app_helpers, "expand_tweet",
+                        lambda url: ("ok", "https://paper.example/found"))
+    counts = app_helpers.recheck_sources(db, app_helpers.junk_papers(db),
+                                         None, "x")
+    assert counts["link"] == 1 and counts["new"] == 1
+    assert db.get_paper(tweet)["metadata_source"] == "link"
+    target = db.get_paper("https://paper.example/found")
+    assert target is not None
+    assert target["metadata_source"] == "none"     # queued for the next Enrich
+
+
+def test_recheck_leaves_a_still_private_tweet_in_junk(db, monkeypatch):
+    tweet = "https://x.com/u/status/2"
+    add(db, tweet, metadata_source="non_paper", tweet_expanded=True)
+    monkeypatch.setattr(app_helpers, "expand_tweet", lambda url: ("gone", None))
+    counts = app_helpers.recheck_sources(db, app_helpers.junk_papers(db),
+                                         None, "x")
+    assert counts["non"] == 1
+    assert db.get_paper(tweet)["metadata_source"] == "non_paper"
