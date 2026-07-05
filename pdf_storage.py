@@ -63,6 +63,7 @@ def save_pdf(url: str) -> Optional[tuple[str, int]]:
 
     target = _target_path_for(url)
     if target.exists() and _looks_like_pdf_file(target):
+        _mirror_file_to_db(target)   # covers files saved before pdf_blobs existed
         return (str(target), target.stat().st_size)
 
     # Pass 1: fetch the URL itself
@@ -85,8 +86,9 @@ def save_pdf(url: str) -> Optional[tuple[str, int]]:
 
 
 def delete_local_pdfs(local_pdf_path: Optional[str]) -> int:
-    """Remove a paper's downloaded PDF — the canonical pdfs/<hash>.pdf AND any
-    copy sitting in pdfs_to_upload/ — when the paper is deleted or reset.
+    """Remove a paper's downloaded PDF — the canonical pdfs/<hash>.pdf, any
+    copy sitting in pdfs_to_upload/, AND its durable copy in the pdf_blobs
+    table — when the paper is deleted or reset.
 
     Filenames are hash-of-URL, so each paper owns a distinct file; removing one
     paper's PDF can never affect another's. No-op (returns 0) when there's no
@@ -95,6 +97,8 @@ def delete_local_pdfs(local_pdf_path: Optional[str]) -> int:
     if not local_pdf_path:
         return 0
     src = Path(local_pdf_path)
+    import database
+    database.delete_pdf_blob(src.name)
     queue_copy = config.PROJECT_ROOT / "pdfs_to_upload" / src.name
     removed = 0
     for target in (src, queue_copy):
@@ -139,6 +143,7 @@ def save_slack_file(download_url: str, key_url: str,
     digest = hashlib.sha256(key_url.encode("utf-8")).hexdigest()[:16]
     target = config.PDFS_DIR / f"{digest}{ext}"
     if target.exists() and target.stat().st_size > 0:
+        _mirror_file_to_db(target)   # covers files saved before pdf_blobs existed
         return (str(target), target.stat().st_size)
     body, content_type = _fetch(download_url)
     if body is None:
@@ -275,4 +280,76 @@ def _write_if_within_limit(target, body: bytes) -> Optional[tuple[str, int]]:
         except OSError:
             pass
         return None
+    _mirror_to_db(target.name, body)
     return (str(target), len(body))
+
+
+# ── Durable copy in the database ──────────────────────────────────────────────
+# The pdfs/ directory is ephemeral on the hosted deploy (wiped every container
+# restart), so files ≤ PDF_BLOB_MAX_BYTES are mirrored into the pdf_blobs table
+# (Turso when hosted) at save time and rehydrated from it on demand. Larger
+# files stay disk-only — the paper carries pdf_too_large and ensure_local_pdf
+# re-downloads them just-in-time instead. `import database` is deferred to call
+# time because database imports this module at load time.
+
+def _mirror_to_db(file_name: str, body: bytes) -> None:
+    """Best-effort durable copy; skipped over the blob cap, never raises."""
+    if len(body) > config.PDF_BLOB_MAX_BYTES:
+        return
+    import database
+    database.save_pdf_blob(file_name, body)
+
+
+def _mirror_file_to_db(target: Path) -> None:
+    """Mirror an already-on-disk file into pdf_blobs (the idempotent early
+    returns in save_pdf/save_slack_file — covers files that predate the blob
+    table or whose original mirror attempt failed). INSERT OR IGNORE upstream
+    makes the repeat call a single cheap no-op round-trip when the blob is
+    already there. Never raises."""
+    try:
+        if target.stat().st_size > config.PDF_BLOB_MAX_BYTES:
+            return
+        body = target.read_bytes()
+    except OSError:
+        return
+    _mirror_to_db(target.name, body)
+
+
+def ensure_local_pdf(paper: dict) -> Optional[str]:
+    """Make a paper's PDF present on the local filesystem, self-healing after a
+    cloud restart wiped pdfs/. Tries, in order:
+        1. the file is already on disk → done;
+        2. rehydrate from the pdf_blobs table (the ≤25 MB durable copy);
+        3. re-download — save_slack_file for Slack uploads, save_pdf for URLs
+           (the pdf_too_large path, or a blob write that never landed).
+    A paper with NO local_pdf_path goes straight to step 3: we never landed the
+    file during enrich (bot block / access issue), so this is one more lucky
+    shot at the download now that it's actually needed. Returns the local path,
+    or None if the PDF can't be produced (expired Slack token, still blocked,
+    or a source that no longer serves the file)."""
+    path = paper.get("local_pdf_path")
+    if path:
+        target = Path(path)
+        if target.is_file() and target.stat().st_size > 0:
+            return str(target)
+
+        import database
+        body = database.load_pdf_blob(target.name)
+        if body is not None:
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                return None
+            got = _write_if_within_limit(target, body)
+            if got:
+                return got[0]
+
+    slack_url = paper.get("slack_file_url")
+    if slack_url:
+        got = save_slack_file(slack_url, paper.get("url") or "",
+                              paper.get("slack_file_name") or "")
+    elif paper.get("url"):
+        got = save_pdf(paper["url"])
+    else:
+        got = None
+    return got[0] if got else None

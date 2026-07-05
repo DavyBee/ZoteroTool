@@ -282,3 +282,134 @@ def test_recheck_leaves_a_still_private_tweet_in_junk(db, monkeypatch):
                                          None, "x")
     assert counts["non"] == 1
     assert db.get_paper(tweet)["metadata_source"] == "non_paper"
+
+
+# ── Durable PDF blobs (pdf_blobs table + ensure_local_pdf self-heal) ──────────
+# On the hosted deploy pdfs/ is wiped on every restart; PDFs ≤ PDF_BLOB_MAX_BYTES
+# are mirrored into the DB at save time and rehydrated on demand. Larger PDFs
+# are flagged pdf_too_large and re-downloaded just-in-time instead.
+
+import pdf_storage
+import config as _config
+
+_PDF_BYTES = b"%PDF-1.4 fake body"
+
+
+@pytest.fixture
+def blob_env(tmp_path, monkeypatch):
+    """Point the PDF store and the default DB at tmp_path so blob writes from
+    pdf_storage (which uses config.DB_PATH) stay isolated and offline."""
+    monkeypatch.setattr(_config, "PDFS_DIR", tmp_path / "pdfs")
+    monkeypatch.setattr(_config, "DB_PATH", tmp_path / "blobs.db")
+    return str(tmp_path / "blobs.db")
+
+
+def test_pdf_blob_round_trip_and_delete(tmp_path):
+    dbp = str(tmp_path / "b.db")
+    assert database.save_pdf_blob("abc.pdf", _PDF_BYTES, db_path=dbp)
+    assert database.load_pdf_blob("abc.pdf", db_path=dbp) == _PDF_BYTES
+    database.delete_pdf_blob("abc.pdf", db_path=dbp)
+    assert database.load_pdf_blob("abc.pdf", db_path=dbp) is None
+
+
+def test_saving_a_pdf_mirrors_it_into_the_db(blob_env):
+    _config.PDFS_DIR.mkdir(parents=True, exist_ok=True)
+    target = _config.PDFS_DIR / "deadbeef.pdf"
+    got = pdf_storage._write_if_within_limit(target, _PDF_BYTES)
+    assert got == (str(target), len(_PDF_BYTES))
+    assert database.load_pdf_blob("deadbeef.pdf", db_path=blob_env) == _PDF_BYTES
+
+
+def test_oversized_pdf_is_not_mirrored(blob_env, monkeypatch):
+    monkeypatch.setattr(_config, "PDF_BLOB_MAX_BYTES", 4)
+    _config.PDFS_DIR.mkdir(parents=True, exist_ok=True)
+    target = _config.PDFS_DIR / "big.pdf"
+    got = pdf_storage._write_if_within_limit(target, _PDF_BYTES)
+    assert got is not None                       # still saved to disk
+    assert database.load_pdf_blob("big.pdf", db_path=blob_env) is None
+
+
+def test_ensure_local_pdf_rehydrates_from_blob_after_restart(blob_env):
+    # Simulate the cloud restart: blob in the DB, file gone from disk.
+    path = str(_config.PDFS_DIR / "cafe.pdf")
+    database.save_pdf_blob("cafe.pdf", _PDF_BYTES, db_path=blob_env)
+    paper = {"url": "https://x.example/p", "local_pdf_path": path}
+    assert pdf_storage.ensure_local_pdf(paper) == path
+    with open(path, "rb") as f:
+        assert f.read() == _PDF_BYTES
+
+
+def test_ensure_local_pdf_redownloads_when_no_blob(blob_env, monkeypatch):
+    # The pdf_too_large path: nothing durable, so it re-downloads via save_pdf.
+    path = str(_config.PDFS_DIR / "beef.pdf")
+    calls = []
+
+    def fake_save_pdf(url):
+        calls.append(url)
+        return (path, 7)
+
+    monkeypatch.setattr(pdf_storage, "save_pdf", fake_save_pdf)
+    paper = {"url": "https://x.example/big", "local_pdf_path": path}
+    assert pdf_storage.ensure_local_pdf(paper) == path
+    assert calls == ["https://x.example/big"]
+
+
+def test_ensure_local_pdf_uses_slack_download_for_slack_uploads(blob_env, monkeypatch):
+    path = str(_config.PDFS_DIR / "5111.pdf")
+    monkeypatch.setattr(pdf_storage, "save_slack_file",
+                        lambda dl, key, name: (path, 7))
+    monkeypatch.setattr(pdf_storage, "save_pdf",
+                        lambda url: pytest.fail("must not hit the URL path"))
+    paper = {"url": "https://sl.example/permalink", "local_pdf_path": path,
+             "slack_file_url": "https://files.slack/private", "slack_file_name": "a.pdf"}
+    assert pdf_storage.ensure_local_pdf(paper) == path
+
+
+def test_delete_local_pdfs_also_deletes_the_blob(blob_env):
+    _config.PDFS_DIR.mkdir(parents=True, exist_ok=True)
+    target = _config.PDFS_DIR / "gone.pdf"
+    pdf_storage._write_if_within_limit(target, _PDF_BYTES)
+    assert database.load_pdf_blob("gone.pdf", db_path=blob_env) is not None
+    assert pdf_storage.delete_local_pdfs(str(target)) == 1
+    assert database.load_pdf_blob("gone.pdf", db_path=blob_env) is None
+
+
+def test_enrich_flags_pdf_too_large(blob_env, monkeypatch):
+    # A PDF over the durable cap enriches normally but carries pdf_too_large,
+    # and the log line says so.
+    monkeypatch.setattr(_config, "PDF_BLOB_MAX_BYTES", 4)
+    _config.PDFS_DIR.mkdir(parents=True, exist_ok=True)
+    big = _config.PDFS_DIR / "huge.pdf"
+    big.write_bytes(_PDF_BYTES)
+    monkeypatch.setattr(metadata, "save_pdf",
+                        lambda url: (str(big), len(_PDF_BYTES)))
+    monkeypatch.setattr(metadata, "fetch_translator", lambda url: None)
+    fields = metadata.enrich_paper({"url": "https://x.example/huge"}, None)
+    assert fields["pdf_too_large"] is True
+    assert fields["metadata_source"] == "pdf_saved"
+    _, label = app_helpers._outcome(fields)
+    assert "too large" in label
+
+
+def test_enrich_leaves_small_pdfs_unflagged(blob_env, monkeypatch):
+    _config.PDFS_DIR.mkdir(parents=True, exist_ok=True)
+    small = _config.PDFS_DIR / "small.pdf"
+    small.write_bytes(_PDF_BYTES)
+    monkeypatch.setattr(metadata, "save_pdf",
+                        lambda url: (str(small), len(_PDF_BYTES)))
+    monkeypatch.setattr(metadata, "fetch_translator", lambda url: None)
+    fields = metadata.enrich_paper({"url": "https://x.example/small"}, None)
+    assert not fields.get("pdf_too_large")
+
+
+def test_ensure_local_pdf_lucky_shot_when_paper_never_had_a_pdf(blob_env, monkeypatch):
+    # Access-issues case: no local_pdf_path at all. ensure_local_pdf should take
+    # one more shot at the download in case the traffic blocker relents.
+    path = str(_config.PDFS_DIR / "lucky.pdf")
+    monkeypatch.setattr(pdf_storage, "save_pdf", lambda url: (path, 7))
+    assert pdf_storage.ensure_local_pdf({"url": "https://blocked.example/p"}) == path
+    # Still blocked → None, quietly.
+    monkeypatch.setattr(pdf_storage, "save_pdf", lambda url: None)
+    assert pdf_storage.ensure_local_pdf({"url": "https://blocked.example/p"}) is None
+    # No URL at all → no attempt, no crash.
+    assert pdf_storage.ensure_local_pdf({}) is None

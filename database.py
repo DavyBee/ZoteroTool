@@ -110,6 +110,11 @@ class Paper(TypedDict, total=False):
     # Local PDF (saved by pdf_storage.save_pdf when the URL yields a real PDF)
     local_pdf_path: Optional[str]
     pdf_size_bytes: Optional[int]
+    # True when the PDF exceeded config.PDF_BLOB_MAX_BYTES, so it was NOT
+    # mirrored into the durable pdf_blobs table and won't survive a cloud
+    # restart on disk. pdf_storage.ensure_local_pdf re-downloads it just-in-
+    # time when the upload/export flows need the bytes.
+    pdf_too_large: Optional[bool]
 
     # Metadata fetch state. metadata_source values:
     #   "none"         — pipeline hasn't run yet
@@ -267,6 +272,20 @@ _SCHEMA_STATEMENTS = (
         data TEXT
     )
     """,
+    # Durable copies of enrich-downloaded PDFs (≤ config.PDF_BLOB_MAX_BYTES),
+    # keyed by the hash-based filename pdf_storage assigns. On the hosted deploy
+    # the pdfs/ directory is wiped on every container restart; this table is the
+    # durable store, and pdf_storage.ensure_local_pdf rehydrates files from it
+    # on demand. One row per PDF, written once at enrich time (incremental —
+    # never rewritten in bulk).
+    """
+    CREATE TABLE IF NOT EXISTS pdf_blobs (
+        file_name TEXT PRIMARY KEY,
+        size      INTEGER,
+        saved_at  TEXT,
+        data      BLOB
+    )
+    """,
 )
 
 
@@ -343,6 +362,66 @@ def set_setting(key: str, value: str, db_path: Optional[str] = None) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+# ── PDF blobs ─────────────────────────────────────────────────────────────────
+# Standalone (not on the Database instance) for the same reason as get_setting:
+# the caller is pdf_storage, which has no Database in hand — it opens its own
+# connection via _connect, so blobs land in Turso on the hosted deploy. All
+# three are best-effort and never raise: PDF durability is a bonus on top of
+# the on-disk copy, and a Turso hiccup must not fail an enrich or upload run.
+
+def save_pdf_blob(file_name: str, data: bytes,
+                  db_path: Optional[str] = None) -> bool:
+    """Store one PDF's bytes durably, keyed by its hash-based filename.
+    INSERT OR IGNORE: the hash filename means same name == same bytes, so an
+    existing row never needs rewriting. Returns True if the blob is durably
+    stored (written now or already present), False on any failure."""
+    try:
+        conn = _connect(db_path) if db_path else _settings_conn()
+        try:
+            _ensure_schema(conn)
+            conn.execute(
+                "INSERT OR IGNORE INTO pdf_blobs (file_name, size, saved_at, data) "
+                "VALUES (?, ?, ?, ?)",
+                (file_name, len(data), _now(), data))
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+    except Exception:
+        return False
+
+
+def load_pdf_blob(file_name: str,
+                  db_path: Optional[str] = None) -> Optional[bytes]:
+    """Fetch one PDF's bytes by filename. Returns None if absent or unreachable."""
+    try:
+        conn = _connect(db_path) if db_path else _settings_conn()
+        try:
+            _ensure_schema(conn)
+            row = conn.execute(
+                "SELECT data FROM pdf_blobs WHERE file_name = ?",
+                (file_name,)).fetchone()
+            return bytes(row[0]) if row and row[0] is not None else None
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+
+def delete_pdf_blob(file_name: str, db_path: Optional[str] = None) -> None:
+    """Remove a PDF's durable copy (paper deleted or reset). Best-effort."""
+    try:
+        conn = _connect(db_path) if db_path else _settings_conn()
+        try:
+            _ensure_schema(conn)
+            conn.execute("DELETE FROM pdf_blobs WHERE file_name = ?", (file_name,))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
 
 
 # ── Dismissed duplicate groups ─────────────────────────────────────────────────
@@ -994,7 +1073,8 @@ def _reset_paper_to_pending(p: Paper) -> None:
     for f in ("title", "authors", "abstract", "year", "journal",
               "keywords", "volume", "issue", "pages", "publisher",
               "isbn", "language", "doi", "metadata_fetched_at",
-              "last_error", "local_pdf_path", "pdf_size_bytes", "upload_error"):
+              "last_error", "local_pdf_path", "pdf_size_bytes", "pdf_too_large",
+              "upload_error"):
         p[f] = [] if f in ("authors", "keywords") else None
     p["item_type"] = "journalArticle"
     p["metadata_source"] = "none"
@@ -1021,6 +1101,7 @@ def _new_paper(url: str, doi: Optional[str]) -> Paper:
         "comments": [],
         "local_pdf_path": None,
         "pdf_size_bytes": None,
+        "pdf_too_large": None,
         "metadata_source": "none",
         "metadata_fetched_at": None,
         "last_error": None,

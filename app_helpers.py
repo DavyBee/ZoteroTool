@@ -679,10 +679,14 @@ def _outcome(fields: dict) -> tuple[str, str]:
     src = fields.get("metadata_source")
     title = fields.get("title")
     pdf = " 📄" if fields.get("local_pdf_path") else ""
+    # Over the 25 MB durable-storage cap: on disk this session only; it will be
+    # re-downloaded automatically when the upload/export flows need it.
+    too_large = " (PDF too large to be saved — will re-download at upload)" \
+        if fields.get("pdf_too_large") else ""
 
     if src == "pdf_saved":
         size_mb = (fields.get("pdf_size_bytes") or 0) / (1024 * 1024)
-        return "pdf", f"📄 PDF saved ({size_mb:.1f} MB)"
+        return "pdf", f"📄 PDF saved ({size_mb:.1f} MB){too_large}"
     if src == "non_paper":
         return "non", "◦ likely junk"
     if src == "link":
@@ -690,9 +694,9 @@ def _outcome(fields: dict) -> tuple[str, str]:
     if src == "needs_manual":
         return "manual", "⚑ access issues"
     if src in READY_SOURCES and title:
-        return "ok", f"✓ {src}{pdf}: {title[:60]}"
+        return "ok", f"✓ {src}{pdf}: {title[:60]}{too_large}"
     if src in CITABLE_SOURCES and title:
-        return "llm", f"✓ {src}{pdf}: {title[:60]}"
+        return "llm", f"✓ {src}{pdf}: {title[:60]}{too_large}"
     if src in CITABLE_SOURCES:
         bits = []
         for f in ("doi", "year", "journal"):
@@ -851,14 +855,15 @@ def revert_to_baseline(db: Database) -> bool:
 
 def pdf_only_papers(db: Database) -> list[dict]:
     """Papers still needing manual PDF import: pdf_saved, not yet confirmed, with
-    their PDF present on disk. On the cloud the filesystem is ephemeral, so a
-    paper counted under "PDF only" can have a path whose file no longer exists —
-    those are excluded here (only downloadable files are returned)."""
+    a PDF we can produce. ensure_local_pdf self-heals the cloud's ephemeral
+    filesystem — file on disk, else rehydrated from the durable pdf_blobs copy,
+    else re-downloaded (the pdf_too_large path). Only papers whose file is
+    actually present after that are returned, so the zip count stays honest."""
+    import pdf_storage
     out = []
     for p in db.all_papers():
         if p.get("metadata_source") == "pdf_saved" and not p.get("pdf_confirmed"):
-            lp = p.get("local_pdf_path")
-            if lp and Path(lp).exists():
+            if p.get("local_pdf_path") and pdf_storage.ensure_local_pdf(p):
                 out.append(p)
     return out
 
@@ -866,8 +871,9 @@ def pdf_only_papers(db: Database) -> list[dict]:
 def zip_pdf_only(db: Database) -> tuple[bytes, int]:
     """Build an in-memory zip of every downloadable PDF-only paper's file, for the
     lab member to download and drag into Zotero desktop. Returns (zip_bytes,
-    count). Empty zip (count 0) when none of the files are present this session —
-    the expected case after a cloud restart wipes the ephemeral filesystem."""
+    count). pdf_only_papers has already made each file present (durable blob
+    copy or re-download), so a cloud restart no longer empties the zip; count 0
+    now only means every PDF-only file was truly unobtainable."""
     import io
     import zipfile
     buf = io.BytesIO()

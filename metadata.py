@@ -750,6 +750,11 @@ def enrich_paper(paper: dict, anthropic_key: Optional[str] = None,
             path, size = got
             fields["local_pdf_path"] = path
             fields["pdf_size_bytes"] = size
+            # Over the durable-storage cap: the file is on this session's disk
+            # but NOT in the pdf_blobs table, so it won't survive a cloud
+            # restart. Flagged so the UI can say so; ensure_local_pdf
+            # re-downloads it just-in-time when it's needed for upload/export.
+            fields["pdf_too_large"] = size > config.PDF_BLOB_MAX_BYTES or None
         if anthropic_key:
             fields.update(enrich_local_file(path, url, paper.get("comments") or [],
                                             anthropic_key, audit_log_path))
@@ -773,6 +778,9 @@ def enrich_paper(paper: dict, anthropic_key: Optional[str] = None,
         path, size = pdf_result
         fields["local_pdf_path"] = path
         fields["pdf_size_bytes"] = size
+        # See the Slack branch above: over the 25 MB durable cap → disk-only
+        # this session, re-downloaded on demand at upload/export time.
+        fields["pdf_too_large"] = size > config.PDF_BLOB_MAX_BYTES or None
 
     # 1. CrossRef, if we already have a DOI (from Slack). Authoritative for DOIs,
     #    and keeps the common case off the free, SLA-less Citoid service.

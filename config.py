@@ -33,6 +33,12 @@ LLM_AUDIT_PATH       = STATE_DIR / "llm_audit.jsonl"
 PDFS_DIR        = PROJECT_ROOT / "pdfs"
 PDF_MAX_BYTES   = 50 * 1024 * 1024     # 50 MB per file — skip larger ones
 PDF_FETCH_BYTES = 60 * 1024 * 1024     # hard read cap (slightly above max)
+# PDFs at or under this size are mirrored into the database (Turso on the
+# hosted deploy) so they survive the cloud's ephemeral filesystem. Larger PDFs
+# stay disk-only: the paper is marked pdf_too_large and the file is re-
+# downloaded just-in-time when it's actually needed (Zotero attach / zip
+# export) — see pdf_storage.ensure_local_pdf.
+PDF_BLOB_MAX_BYTES = 25 * 1024 * 1024  # 25 MB
 
 # ── Network ───────────────────────────────────────────────────────────────────
 
