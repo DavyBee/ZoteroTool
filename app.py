@@ -1102,32 +1102,6 @@ def render_debug(db):
     if st.button("Run reset", type="primary", disabled=not ok, key="dbg_run"):
         _run_debug(db, action)
 
-    st.caption("Force re-ingest — re-parse files even if already processed. Use this "
-               "to repopulate after the database was emptied or got out of sync with "
-               "the processed-files registry (e.g. after a merge). Safe: papers and "
-               "comments still dedup, so nothing duplicates.")
-    up = st.file_uploader("Slack export JSON files", accept_multiple_files=True,
-                          type="json", key="dbg_reingest_uploader")
-    if st.button("📥 Force re-ingest uploaded file(s)", key="dbg_reingest",
-                 disabled=not up):
-        _force_reingest(db, _save_uploads_to_tmp(up, "slack_reingest_"))
-
-
-def _force_reingest(db, paths):
-    """Force re-ingest the given Slack JSON paths and report the result. Shared by
-    the local (Finder) and hosted (uploader) debug re-ingest controls."""
-    if not paths:
-        return
-    with st.spinner(f"Re-ingesting {len(paths)} file(s)…"):
-        r = H.ingest_paths(db, paths, force=True)
-    slack_note = (f" Found {r['slack_files']} Slack file(s) — they'll be read "
-                  "when you Enrich.") if r.get("slack_files") else ""
-    st.session_state.dbg_result = (
-        f"Force re-ingested: added {r['new_papers']} new paper(s) and "
-        f"{r['new_comments']} comment(s) from {r['files']} file(s)." + slack_note)
-    reload_db()
-    st.rerun()
-
 
 if __name__ == "__main__":
     main()
