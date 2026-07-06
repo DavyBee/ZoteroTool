@@ -365,13 +365,44 @@ def test_ensure_local_pdf_uses_slack_download_for_slack_uploads(blob_env, monkey
     assert pdf_storage.ensure_local_pdf(paper) == path
 
 
-def test_delete_local_pdfs_also_deletes_the_blob(blob_env):
+def test_delete_local_pdfs_leaves_the_blob_alone(blob_env):
+    # Blob deletion is batched through Database.save() (one round-trip per
+    # chunk on Turso), so the local-file helper must not touch pdf_blobs.
     _config.PDFS_DIR.mkdir(parents=True, exist_ok=True)
     target = _config.PDFS_DIR / "gone.pdf"
     pdf_storage._write_if_within_limit(target, _PDF_BYTES)
     assert database.load_pdf_blob("gone.pdf", db_path=blob_env) is not None
     assert pdf_storage.delete_local_pdfs(str(target)) == 1
+    assert database.load_pdf_blob("gone.pdf", db_path=blob_env) is not None
+
+
+def test_reset_deletes_pdf_files_and_batches_blob_delete_into_save(blob_env, tmp_path):
+    _config.PDFS_DIR.mkdir(parents=True, exist_ok=True)
+    target = _config.PDFS_DIR / "gone.pdf"
+    pdf_storage._write_if_within_limit(target, _PDF_BYTES)   # mirrors into blob_env
+
+    db = database.Database(blob_env, str(tmp_path / "unused"))
+    key, _ = db.add_paper("https://x.example/p")
+    db.update_paper(key, title="T", metadata_source="pdf_saved",
+                    local_pdf_path=str(target))
+    db.save()
+
+    assert db.reset_paper("https://x.example/p")
+    assert not target.is_file()                              # local file gone now
+    # The durable blob is only deleted at save time, in one batched statement.
+    assert database.load_pdf_blob("gone.pdf", db_path=blob_env) is not None
+    db.save()
     assert database.load_pdf_blob("gone.pdf", db_path=blob_env) is None
+
+
+def test_wipe_all_clears_the_blob_table_at_save(blob_env, tmp_path):
+    database.save_pdf_blob("a.pdf", _PDF_BYTES, db_path=blob_env)
+    db = database.Database(blob_env, str(tmp_path / "unused"))
+    db.add_paper("https://x.example/p")
+    db.save()
+    db.clear_all_papers()
+    db.save()
+    assert database.load_pdf_blob("a.pdf", db_path=blob_env) is None
 
 
 def test_enrich_flags_pdf_too_large(blob_env, monkeypatch):

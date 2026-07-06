@@ -312,10 +312,36 @@ def _connect(path: str) -> sqlite3.Connection:
     return conn
 
 
-def _ensure_schema(conn) -> None:
+# DBs whose schema this process has already ensured, keyed by _schema_key.
+# The CREATE TABLE IF NOT EXISTS block is five separate statements — five
+# network round-trips on Turso — and the standalone settings/blob helpers open
+# a fresh connection per call, so re-running it every time made a single-row
+# blob op several times more expensive than the row op itself. The schema only
+# needs creating once per database, so it's skipped after the first success.
+_schema_ready: set[str] = set()
+
+
+def _schema_key(path: str) -> str:
+    """Identity of the DB a _connect(path) call actually reaches: in Turso mode
+    every connection hits the hosted DB regardless of `path`, so the URL is the
+    identity; locally it's the file path."""
+    if os.environ.get("TURSO_DATABASE_URL") and os.environ.get("TURSO_AUTH_TOKEN"):
+        return os.environ["TURSO_DATABASE_URL"]
+    return os.path.abspath(str(path))
+
+
+def _ensure_schema(conn, path: Optional[str] = None) -> None:
+    """Create any missing tables, once per database per process. Callers that
+    know the path they connected with pass it so the ensured-DB cache applies;
+    a None path always runs the statements (the safe fallback)."""
+    key = _schema_key(path) if path is not None else None
+    if key is not None and key in _schema_ready:
+        return
     for stmt in _SCHEMA_STATEMENTS:
         conn.execute(stmt)
     conn.commit()
+    if key is not None:
+        _schema_ready.add(key)
 
 
 # ── Durable key/value settings ────────────────────────────────────────────────
@@ -325,9 +351,14 @@ def _ensure_schema(conn) -> None:
 # hosted deploy exactly like everything else. The DB path comes from config (late
 # import: database itself does not import config, so there's no cycle).
 
-def _settings_conn():
+def _default_db_path(db_path: Optional[str]) -> str:
+    """The path a standalone helper should connect with: the caller's explicit
+    db_path, else config.DB_PATH (late import: database itself does not import
+    config, so there's no cycle)."""
+    if db_path:
+        return str(db_path)
     import config
-    return _connect(str(config.DB_PATH))
+    return str(config.DB_PATH)
 
 
 def get_setting(key: str, default: Optional[str] = None,
@@ -338,9 +369,10 @@ def get_setting(key: str, default: Optional[str] = None,
     settings that should live alongside that library rather than globally
     (e.g. a test's isolated tmp_path DB)."""
     try:
-        conn = _connect(db_path) if db_path else _settings_conn()
+        path = _default_db_path(db_path)
+        conn = _connect(path)
         try:
-            _ensure_schema(conn)
+            _ensure_schema(conn, path)
             row = conn.execute(
                 "SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
             return row[0] if row and row[0] is not None else default
@@ -354,7 +386,7 @@ def set_setting(key: str, value: str, db_path: Optional[str] = None) -> None:
     """Persist a setting. DELETE+INSERT rather than UPSERT so the local sqlite3
     and hosted libsql paths behave identically (same reason as save()). See
     get_setting for db_path."""
-    conn = _connect(db_path) if db_path else _settings_conn()
+    conn = _connect(_default_db_path(db_path))
     try:
         conn.execute("DELETE FROM settings WHERE key = ?", (key,))
         conn.execute(
@@ -378,9 +410,10 @@ def save_pdf_blob(file_name: str, data: bytes,
     existing row never needs rewriting. Returns True if the blob is durably
     stored (written now or already present), False on any failure."""
     try:
-        conn = _connect(db_path) if db_path else _settings_conn()
+        path = _default_db_path(db_path)
+        conn = _connect(path)
         try:
-            _ensure_schema(conn)
+            _ensure_schema(conn, path)
             conn.execute(
                 "INSERT OR IGNORE INTO pdf_blobs (file_name, size, saved_at, data) "
                 "VALUES (?, ?, ?, ?)",
@@ -397,9 +430,10 @@ def load_pdf_blob(file_name: str,
                   db_path: Optional[str] = None) -> Optional[bytes]:
     """Fetch one PDF's bytes by filename. Returns None if absent or unreachable."""
     try:
-        conn = _connect(db_path) if db_path else _settings_conn()
+        path = _default_db_path(db_path)
+        conn = _connect(path)
         try:
-            _ensure_schema(conn)
+            _ensure_schema(conn, path)
             row = conn.execute(
                 "SELECT data FROM pdf_blobs WHERE file_name = ?",
                 (file_name,)).fetchone()
@@ -411,11 +445,14 @@ def load_pdf_blob(file_name: str,
 
 
 def delete_pdf_blob(file_name: str, db_path: Optional[str] = None) -> None:
-    """Remove a PDF's durable copy (paper deleted or reset). Best-effort."""
+    """Remove a PDF's durable copy. Best-effort. One network round-trip per
+    call — bulk deletes (reset / wipe) go through Database's queued batch in
+    save() instead, never through a loop over this."""
     try:
-        conn = _connect(db_path) if db_path else _settings_conn()
+        path = _default_db_path(db_path)
+        conn = _connect(path)
         try:
-            _ensure_schema(conn)
+            _ensure_schema(conn, path)
             conn.execute("DELETE FROM pdf_blobs WHERE file_name = ?", (file_name,))
             conn.commit()
         finally:
@@ -538,13 +575,19 @@ class Database:
         self._papers_saved: dict[str, str] = {}
         self._processed_saved: dict[str, str] = {}
         self._snapshot_valid = False
+        # Durable-PDF (pdf_blobs) deletions queued by reset/delete operations,
+        # flushed by save() as one chunked DELETE on its existing connection.
+        # Deleting them inline was one full connect+delete round-trip to Turso
+        # per paper, which turned bulk resets into minutes of network calls.
+        self._blob_deletes: set[str] = set()
+        self._wipe_blobs = False
 
     @classmethod
     def load(cls, db_path: str, processed_path: str) -> "Database":
         db = cls(db_path, processed_path)
         conn = _connect(db_path)
         try:
-            _ensure_schema(conn)
+            _ensure_schema(conn, db_path)
             try:
                 paper_rows = conn.execute("SELECT data FROM papers").fetchall()
                 file_rows = conn.execute(
@@ -609,14 +652,15 @@ class Database:
             proc_dirty = [k for k, s in cur_proc.items()
                           if self._processed_saved.get(k) != s]
             proc_deleted = [k for k in self._processed_saved if k not in cur_proc]
-            if not (paper_dirty or paper_deleted or proc_dirty or proc_deleted):
+            if not (paper_dirty or paper_deleted or proc_dirty or proc_deleted
+                    or self._blob_deletes or self._wipe_blobs):
                 if progress:
                     progress(1.0)
                 return   # nothing changed — skip the DB connection entirely
 
         conn = _connect(self.db_path)
         try:
-            _ensure_schema(conn)
+            _ensure_schema(conn, self.db_path)
             if not self._snapshot_valid:
                 # Never loaded — we don't know what's on disk, so rewrite in full to
                 # guarantee disk == memory, then adopt the snapshot below.
@@ -637,11 +681,20 @@ class Database:
                 _insert_rows(conn, "processed_files", self._PROCESSED_COLUMNS,
                              [self._processed_row(k) for k in proc_dirty],
                              replace=True)
+                # Flush queued durable-PDF deletions in the same transaction —
+                # chunked IN (...) statements, not one round-trip per blob.
+                if self._wipe_blobs:
+                    conn.execute("DELETE FROM pdf_blobs")
+                else:
+                    _delete_keys(conn, "pdf_blobs", "file_name",
+                                 sorted(self._blob_deletes))
                 conn.commit()
                 # Commit succeeded → these signatures are now what's on disk.
                 self._papers_saved = cur_papers
                 self._processed_saved = cur_proc
                 self._snapshot_valid = True
+                self._blob_deletes.clear()
+                self._wipe_blobs = False
             except Exception:
                 try:
                     conn.rollback()
@@ -679,7 +732,7 @@ class Database:
                           ensure_ascii=False)
         conn = _connect(self.db_path)
         try:
-            _ensure_schema(conn)
+            _ensure_schema(conn, self.db_path)
             conn.execute("DELETE FROM snapshots WHERE name = ?", (name,))
             conn.execute("INSERT INTO snapshots (name, data) VALUES (?, ?)",
                          (name, blob))
@@ -690,7 +743,7 @@ class Database:
     def has_named_snapshot(self, name: str) -> bool:
         conn = _connect(self.db_path)
         try:
-            _ensure_schema(conn)
+            _ensure_schema(conn, self.db_path)
             row = conn.execute(
                 "SELECT 1 FROM snapshots WHERE name = ?", (name,)).fetchone()
             return row is not None
@@ -702,7 +755,7 @@ class Database:
         Returns False if the snapshot doesn't exist."""
         conn = _connect(self.db_path)
         try:
-            _ensure_schema(conn)
+            _ensure_schema(conn, self.db_path)
             row = conn.execute(
                 "SELECT data FROM snapshots WHERE name = ?", (name,)).fetchone()
         finally:
@@ -899,13 +952,24 @@ class Database:
 
         return groups
 
+    def _drop_paper_pdf(self, p: Paper) -> None:
+        """Remove a paper's downloaded PDF: local files (canonical store +
+        upload-queue copy) now — cheap disk ops — and its durable pdf_blobs row
+        queued for the batched delete in the next save(). No-op for papers
+        without a PDF."""
+        path = p.get("local_pdf_path")
+        if not path:
+            return
+        pdf_storage.delete_local_pdfs(path)
+        self._blob_deletes.add(os.path.basename(path))
+
     def delete_paper(self, url: str) -> bool:
         """Remove a paper from the DB by URL, along with its downloaded PDF
-        (canonical store + upload-queue copy). Does NOT save — caller must call
-        save() after one or more deletions. Returns True if it existed."""
+        (local files now, durable blob at the next save). Does NOT save — caller
+        must call save() after one or more deletions. Returns True if it existed."""
         key = normalize_url(url)
         if key in self._papers:
-            pdf_storage.delete_local_pdfs(self._papers[key].get("local_pdf_path"))
+            self._drop_paper_pdf(self._papers[key])
             del self._papers[key]
             return True
         return False
@@ -938,11 +1002,14 @@ class Database:
 
     def clear_all_papers(self) -> int:
         """Delete every paper record from the DB, along with each paper's
-        downloaded PDF (canonical store + upload-queue copy). Irreversible."""
+        downloaded PDF (local files now; the entire pdf_blobs table goes in one
+        statement at the next save). Irreversible."""
         n = len(self._papers)
         for p in self._papers.values():
             pdf_storage.delete_local_pdfs(p.get("local_pdf_path"))
         self._papers = {}
+        self._blob_deletes.clear()   # superseded by the full wipe
+        self._wipe_blobs = True
         return n
 
     def reset_processed_files(self) -> int:
@@ -968,6 +1035,7 @@ class Database:
                 hit = src in states or (include_errored and bool(p.get("last_error")))
             if not hit:
                 continue
+            self._drop_paper_pdf(p)
             _reset_paper_to_pending(p)
             n += 1
         return n
@@ -979,6 +1047,7 @@ class Database:
         p = self._papers.get(normalize_url(url))
         if p is None:
             return False
+        self._drop_paper_pdf(p)
         _reset_paper_to_pending(p)
         return True
 
@@ -1064,12 +1133,10 @@ class Database:
 def _reset_paper_to_pending(p: Paper) -> None:
     """Wipe all resolved metadata so the cascade re-runs from scratch, keeping
     only identity (url) and Slack context (comments). Shared by
-    reset_enrichment (bulk) and reset_paper (single).
-
-    The cached PDF is deleted too (canonical store + upload-queue copy): a paper
-    reset to Pending will re-download on the next Enrich, so keeping the old file
-    only orphans it on disk."""
-    pdf_storage.delete_local_pdfs(p.get("local_pdf_path"))
+    reset_enrichment (bulk) and reset_paper (single) — both call
+    Database._drop_paper_pdf first, which removes the cached PDF (a paper reset
+    to Pending re-downloads on the next Enrich, so keeping the old file only
+    orphans it)."""
     for f in ("title", "authors", "abstract", "year", "journal",
               "keywords", "volume", "issue", "pages", "publisher",
               "isbn", "language", "doi", "metadata_fetched_at",

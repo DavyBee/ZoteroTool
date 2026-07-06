@@ -86,9 +86,12 @@ def save_pdf(url: str) -> Optional[tuple[str, int]]:
 
 
 def delete_local_pdfs(local_pdf_path: Optional[str]) -> int:
-    """Remove a paper's downloaded PDF — the canonical pdfs/<hash>.pdf, any
-    copy sitting in pdfs_to_upload/, AND its durable copy in the pdf_blobs
-    table — when the paper is deleted or reset.
+    """Remove a paper's downloaded PDF files from the LOCAL filesystem — the
+    canonical pdfs/<hash>.pdf and any copy sitting in pdfs_to_upload/ — when
+    the paper is deleted or reset. The durable pdf_blobs copy is NOT touched
+    here: deleting it inline was one network round-trip to Turso per paper, so
+    Database queues those (see _drop_paper_pdf) and save() deletes them in one
+    batched statement.
 
     Filenames are hash-of-URL, so each paper owns a distinct file; removing one
     paper's PDF can never affect another's. No-op (returns 0) when there's no
@@ -97,8 +100,6 @@ def delete_local_pdfs(local_pdf_path: Optional[str]) -> int:
     if not local_pdf_path:
         return 0
     src = Path(local_pdf_path)
-    import database
-    database.delete_pdf_blob(src.name)
     queue_copy = config.PROJECT_ROOT / "pdfs_to_upload" / src.name
     removed = 0
     for target in (src, queue_copy):
