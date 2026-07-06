@@ -402,14 +402,14 @@ def test_enrich_leaves_small_pdfs_unflagged(blob_env, monkeypatch):
     assert not fields.get("pdf_too_large")
 
 
-def test_ensure_local_pdf_lucky_shot_when_paper_never_had_a_pdf(blob_env, monkeypatch):
-    # Access-issues case: no local_pdf_path at all. ensure_local_pdf should take
-    # one more shot at the download in case the traffic blocker relents.
-    path = str(_config.PDFS_DIR / "lucky.pdf")
-    monkeypatch.setattr(pdf_storage, "save_pdf", lambda url: (path, 7))
-    assert pdf_storage.ensure_local_pdf({"url": "https://blocked.example/p"}) == path
-    # Still blocked → None, quietly.
-    monkeypatch.setattr(pdf_storage, "save_pdf", lambda url: None)
+def test_ensure_local_pdf_never_downloads_for_papers_without_a_pdf(blob_env, monkeypatch):
+    # A paper that never landed a PDF must return None with NO download
+    # attempt. (The "lucky shot" retry at upload time was removed: retrying
+    # blocked publishers is a near-guaranteed slow timeout per paper, and it
+    # made whole upload runs crawl.)
+    monkeypatch.setattr(pdf_storage, "save_pdf",
+                        lambda url: pytest.fail("must not attempt a download"))
+    monkeypatch.setattr(pdf_storage, "save_slack_file",
+                        lambda dl, key, name: pytest.fail("must not attempt a download"))
     assert pdf_storage.ensure_local_pdf({"url": "https://blocked.example/p"}) is None
-    # No URL at all → no attempt, no crash.
     assert pdf_storage.ensure_local_pdf({}) is None

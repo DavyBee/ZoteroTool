@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import html
 import time
-from pathlib import Path
 from typing import Callable, Optional
 
 from pyzotero import zotero
@@ -187,27 +186,22 @@ def upload_papers(
             # and pdf_saved isn't uploadable, so it never reaches this loop.)
             # ensure_local_pdf makes the file present even after a cloud restart
             # wiped pdfs/: disk → durable pdf_blobs copy → just-in-time
-            # re-download (the pdf_too_large path). Called even when no PDF was
-            # ever landed (access issues during enrich) — one more lucky shot at
-            # the download now, in case the traffic blocker relents. A paper
-            # that HAD a PDF but can't produce one now is an error; a failed
-            # lucky shot is not (that paper never had a file to lose).
-            had_pdf = bool(paper.get("local_pdf_path"))
-            local_pdf = pdf_storage.ensure_local_pdf(paper)
-            if local_pdf:
-                if not had_pdf:      # lucky shot landed — record it in the DB
-                    db.update_paper(normalize_url(paper["url"]),
-                                    local_pdf_path=local_pdf,
-                                    pdf_size_bytes=Path(local_pdf).stat().st_size)
-                try:
-                    zot.attachment_simple([local_pdf], parentid=zotero_key)
-                    n_pdf += 1
-                except Exception as exc:
-                    errors.append((paper["url"], f"pdf_attach failed: {exc}"))
-            elif had_pdf:
-                errors.append((paper["url"],
-                               "pdf_attach skipped: file not on disk and "
-                               "re-download failed (item uploaded without PDF)"))
+            # re-download (the pdf_too_large path). Papers that never landed a
+            # PDF are skipped outright — no download attempt at upload time
+            # (see ensure_local_pdf's docstring: retrying blocked publishers
+            # here made every upload run crawl).
+            if paper.get("local_pdf_path"):
+                local_pdf = pdf_storage.ensure_local_pdf(paper)
+                if local_pdf:
+                    try:
+                        zot.attachment_simple([local_pdf], parentid=zotero_key)
+                        n_pdf += 1
+                    except Exception as exc:
+                        errors.append((paper["url"], f"pdf_attach failed: {exc}"))
+                else:
+                    errors.append((paper["url"],
+                                   "pdf_attach skipped: file not on disk and "
+                                   "re-download failed (item uploaded without PDF)"))
 
             # Attach the Slack discussion (original message + thread replies) as a
             # child note. Non-fatal: the parent is already uploaded, so a note

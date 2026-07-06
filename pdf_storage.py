@@ -322,34 +322,35 @@ def ensure_local_pdf(paper: dict) -> Optional[str]:
         2. rehydrate from the pdf_blobs table (the ≤25 MB durable copy);
         3. re-download — save_slack_file for Slack uploads, save_pdf for URLs
            (the pdf_too_large path, or a blob write that never landed).
-    A paper with NO local_pdf_path goes straight to step 3: we never landed the
-    file during enrich (bot block / access issue), so this is one more lucky
-    shot at the download now that it's actually needed. Returns the local path,
-    or None if the PDF can't be produced (expired Slack token, still blocked,
-    or a source that no longer serves the file)."""
+    Only for papers that HAVE a local_pdf_path. A paper that never landed a
+    PDF returns None immediately — NO download attempt. (Retrying those at
+    upload time as a "lucky shot" at blocked publishers was tried and removed:
+    every such paper is a near-guaranteed slow timeout, so it made whole
+    upload runs crawl. The "Check again" button on Access issues is the retry
+    path.) Returns the local path, or None if the PDF can't be produced
+    (expired Slack token, or a source that no longer serves the file)."""
     path = paper.get("local_pdf_path")
-    if path:
-        target = Path(path)
-        if target.is_file() and target.stat().st_size > 0:
-            return str(target)
+    if not path:
+        return None
+    target = Path(path)
+    if target.is_file() and target.stat().st_size > 0:
+        return str(target)
 
-        import database
-        body = database.load_pdf_blob(target.name)
-        if body is not None:
-            try:
-                target.parent.mkdir(parents=True, exist_ok=True)
-            except OSError:
-                return None
-            got = _write_if_within_limit(target, body)
-            if got:
-                return got[0]
+    import database
+    body = database.load_pdf_blob(target.name)
+    if body is not None:
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return None
+        got = _write_if_within_limit(target, body)
+        if got:
+            return got[0]
 
     slack_url = paper.get("slack_file_url")
     if slack_url:
         got = save_slack_file(slack_url, paper.get("url") or "",
                               paper.get("slack_file_name") or "")
-    elif paper.get("url"):
-        got = save_pdf(paper["url"])
     else:
-        got = None
+        got = save_pdf(paper.get("url") or "")
     return got[0] if got else None
