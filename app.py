@@ -867,6 +867,82 @@ _TAB_CSS = """
 """
 
 
+# ── Table scroll preservation ────────────────────────────────────────────────
+#
+# Toggling "Edit table cells" swaps st.dataframe for st.data_editor (same key),
+# and Streamlit rebuilds the grid on that rerun — which silently resets the
+# grid's internal scroll to the top. Streamlit has no API for the grid's scroll
+# position, so a small script (hosted in an invisible component iframe that
+# stays mounted across reruns) watches the app page instead: it remembers each
+# keyed table's scroll offset as the user scrolls, and re-applies it whenever
+# that table's grid is rebuilt. Tables are identified by widget key — Streamlit
+# exposes it as an `st-key-<key>` CSS class — with the trailing _tkey()
+# generation stripped, so the spot also survives refresh_tables(). Zero
+# maintenance by design: if a future Streamlit renames the grid internals
+# (.dvn-scroller), the selector matches nothing and the app just behaves as it
+# did before this shim — no errors, only no scroll restore.
+_SCROLL_KEEPER = """
+<script>
+(function () {
+    const win = window.parent;
+    if (win.__tblScrollKeeper) return;       // install once per page load
+    win.__tblScrollKeeper = true;
+    const doc = win.document;
+    const saved = {};                        // base widget key -> {top, left}
+
+    function adopt(sc) {                     // sc: a grid's .dvn-scroller div
+        if (sc.__scrollKept) return;
+        sc.__scrollKept = true;
+        const holder = sc.closest('[class*="st-key-"]');
+        const m = holder && holder.className.match(/st-key-(\\S+)/);
+        if (!m) return;                      // unkeyed table: nothing to track
+        const key = m[1].replace(/_\\d+$/, '');
+        const pos = saved[key];
+        let restoring = !!(pos && (pos.top || pos.left));
+        const stop = () => { restoring = false; };
+        // A real user gesture always beats an in-flight restore.
+        ['wheel', 'touchstart', 'mousedown'].forEach(
+            (t) => sc.addEventListener(t, stop, { passive: true }));
+        sc.addEventListener('scroll', () => {
+            if (!restoring)
+                saved[key] = { top: sc.scrollTop, left: sc.scrollLeft };
+        }, { passive: true });
+        if (!restoring) return;
+        // The grid zeroes its scroll while mounting, so re-apply the saved
+        // offset each frame until it sticks (or clamps on shorter content).
+        let tries = 0;
+        (function tick() {
+            if (!restoring) return;
+            sc.scrollTop = pos.top;
+            sc.scrollLeft = pos.left;
+            const held = Math.abs(sc.scrollTop - pos.top) < 1 &&
+                         Math.abs(sc.scrollLeft - pos.left) < 1;
+            if (!held && ++tries < 40) win.requestAnimationFrame(tick);
+            else stop();
+        })();
+    }
+
+    const sweep = () => doc.querySelectorAll('.dvn-scroller').forEach(adopt);
+    sweep();
+    let queued = false;                      // collapse mutation bursts to 1/frame
+    new win.MutationObserver(() => {
+        if (queued) return;
+        queued = true;
+        win.requestAnimationFrame(() => { queued = false; sweep(); });
+    }).observe(doc.body, { childList: true, subtree: true });
+})();
+</script>
+"""
+
+
+def keep_table_scroll():
+    """Mount the scroll-keeper script (invisible; 1px is the smallest height
+    st.iframe accepts). The HTML is static, so Streamlit keeps this iframe
+    alive across reruns instead of reloading it — the script's state (saved
+    offsets, observer) lives for the whole page session."""
+    st.iframe(_SCROLL_KEEPER, height=1)
+
+
 def main():
     # Re-read .env as the authoritative source on every rerun, so a value the
     # user fixes in the file (or via the Settings form) takes effect on the next
@@ -904,6 +980,8 @@ def main():
             render_debug(db)
 
     render_footer()
+    # Last on the page so the 0-height iframe never nudges the layout above it.
+    keep_table_scroll()
 
 
 # ── Tab: Database ────────────────────────────────────────────────────────────
