@@ -124,7 +124,8 @@ class ParsedFile(TypedDict):
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def parse_files(filepaths: list[str]) -> list[ParsedFile]:
+def parse_files(filepaths: list[str],
+                user_map: Optional[dict[str, str]] = None) -> list[ParsedFile]:
     """
     Load and parse a list of Slack export files.
 
@@ -132,10 +133,11 @@ def parse_files(filepaths: list[str]) -> list[ParsedFile]:
     are attached to the link from the earlier day. Each link or upload is
     reported under the file where it first appears. The user-id → name map is
     built from every file before any text is cleaned, because a user's name may
-    only appear in a file other than the one they posted in.
+    only appear in a file other than the one they posted in. `user_map` seeds
+    it, e.g. from a full export's users.json (see read_users_json).
     """
     loaded: list[tuple[str, list[dict]]] = []
-    user_map: dict[str, str] = {}
+    user_map = dict(user_map or {})
 
     for path in filepaths:
         try:
@@ -161,6 +163,26 @@ def parse_files(filepaths: list[str]) -> list[ParsedFile]:
     for path, fa in _files_from_threads(threads, user_map):
         by_path[path]["files"].append(fa)
     return [by_path[path] for path, _ in loaded]
+
+
+def read_users_json(data: bytes | str) -> dict[str, str]:
+    """user id → display name from a full Slack export's users.json. Returns
+    {} if the content isn't a users list."""
+    try:
+        users = json.loads(data)
+    except (ValueError, TypeError):
+        return {}
+    out: dict[str, str] = {}
+    if isinstance(users, list):
+        for u in users:
+            if not isinstance(u, dict) or not u.get("id"):
+                continue
+            prof = u.get("profile") or {}
+            name = (u.get("real_name") or prof.get("real_name")
+                    or prof.get("display_name") or u.get("name"))
+            if name:
+                out[u["id"]] = name
+    return out
 
 
 def extract_links(messages: list[dict], user_map: dict[str, str]) -> list[ThreadedLink]:

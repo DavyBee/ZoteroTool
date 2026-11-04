@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Optional
@@ -108,6 +109,9 @@ def _fetch_page_text(url: str) -> tuple[str, str]:
 # and space requests at least config.CITOID_MIN_INTERVAL apart.
 _CITOID_CACHE: dict[str, Optional[dict]] = {}
 _last_citoid_call = 0.0
+# Scans enrich several papers at once; the lock makes the throttle hold across
+# threads by reserving each request's start time in turn.
+_citoid_lock = threading.Lock()
 
 
 def _citoid_get(url: str) -> Optional[dict]:
@@ -123,9 +127,11 @@ def _citoid_get(url: str) -> Optional[dict]:
     if url in _CITOID_CACHE:
         return _CITOID_CACHE[url]
 
-    wait = config.CITOID_MIN_INTERVAL - (time.monotonic() - _last_citoid_call)
-    if wait > 0:
-        time.sleep(wait)
+    with _citoid_lock:
+        wait = config.CITOID_MIN_INTERVAL - (time.monotonic() - _last_citoid_call)
+        if wait > 0:
+            time.sleep(wait)
+        _last_citoid_call = time.monotonic()
 
     api = config.CITOID_BASE + url_quote(url, safe="")
     req = Request(api, headers={
@@ -140,8 +146,6 @@ def _citoid_get(url: str) -> Optional[dict]:
             item = data[0]
     except Exception:
         item = None
-    finally:
-        _last_citoid_call = time.monotonic()
 
     _CITOID_CACHE[url] = item
     return item

@@ -139,14 +139,15 @@ def uploadable_papers(db: Database) -> list[Paper]:
 def upload_papers(
     papers: list[Paper],
     zot: zotero.Zotero,
-    db: Database,
+    db: Optional[Database] = None,
     progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> dict:
     """
     Upload papers to Zotero in batches of BATCH_SIZE.
 
-    For each successfully created item, writes zotero_key and uploaded_at
-    back to the DB. PDFs are handled separately — all saved PDFs go to
+    For each successfully created item, sets paper["zotero_key"], and writes
+    zotero_key and uploaded_at back to the DB when one is given. A rejected
+    item gets paper["upload_error"]. PDFs are handled separately — all saved PDFs go to
     pdfs_to_upload/ for import via Zotero desktop.
 
     Returns:
@@ -169,13 +170,16 @@ def upload_papers(
             msg = f"batch upload failed: {exc}"
             for p in batch:
                 errors.append((p["url"], msg))
+                p["upload_error"] = msg
             n_fail += len(batch)
             continue
 
         for idx_str, item_data in resp.get("successful", {}).items():
             paper = batch[int(idx_str)]
             zotero_key = item_data["data"]["key"]
-            db.mark_uploaded(normalize_url(paper["url"]), zotero_key)
+            paper["zotero_key"] = zotero_key
+            if db is not None:
+                db.mark_uploaded(normalize_url(paper["url"]), zotero_key)
             n_ok += 1
 
             # Attach the local file for ANY uploaded record that has one. We now
@@ -224,10 +228,13 @@ def upload_papers(
             # Stamp the per-item rejection onto the paper so it leaves Ready and
             # shows in the Upload tab's fixable error list (vs whole-batch network
             # failures above, which are transient and left to auto-retry).
-            db.update_paper(normalize_url(paper["url"]), upload_error=msg)
+            paper["upload_error"] = msg
+            if db is not None:
+                db.update_paper(normalize_url(paper["url"]), upload_error=msg)
             n_fail += 1
 
-        db.save()
+        if db is not None:
+            db.save()
         if progress_cb:
             progress_cb(min(batch_start + BATCH_SIZE, total), total)
 
