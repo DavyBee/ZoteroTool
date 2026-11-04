@@ -936,6 +936,8 @@ def ingest_paths(db: Database, paths: list[str], force: bool = False,
                     new_comments += 1
             if is_new:
                 new_papers += 1
+            if link.get("hints") and not (db.get_paper(key) or {}).get("slack_hints"):
+                db.update_paper(key, slack_hints=link["hints"])
         # Slack file uploads (files[]): add by permalink and RECORD the download
         # link + filename. The bytes are fetched + LLM-read later by the normal
         # Enrich run (metadata.enrich_paper's Slack-file branch) — no separate step.

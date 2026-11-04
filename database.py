@@ -103,6 +103,10 @@ class Paper(TypedDict, total=False):
     # URL-shared papers.
     slack_file_url: Optional[str]
     slack_file_name: Optional[str]
+    # Title / authors / keywords typed into the lab's "Post an article" Slack
+    # workflow, when the link came from one. Not uploaded as-is; a hint for
+    # enrichment. See slack_parser.parse_workflow_post.
+    slack_hints: Optional[dict]
 
     # Slack context
     comments: list[Comment]
