@@ -203,3 +203,25 @@ def test_real_export():
 ])
 def test_clean_url_undoes_library_proxies(raw, expected):
     assert clean_url(raw) == expected
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("https://nam02.safelinks.protection.outlook.com/?url=https%3A%2F%2Fwww.amazon.com%2Fdp%2F1&data=05",
+     "https://www.amazon.com/dp/1"),
+    ("https://scholar.google.com/scholar_url?url=https%3A%2F%2Fa.org%2Fp.pdf&hl=en", "https://a.org/p.pdf"),
+    ("https://www.google.com/url?q=https://a.org/p&sa=D", "https://a.org/p"),
+    ("https://l.facebook.com/l.php?u=https%3A%2F%2Fa.org%2Fp&h=x", "https://a.org/p"),
+])
+def test_clean_url_unwraps_redirect_links(raw, expected):
+    assert clean_url(raw) == expected
+
+
+def test_a_google_search_is_not_treated_as_a_redirect():
+    assert clean_url("https://www.google.com/search?q=https://a.org").startswith(
+        "https://www.google.com/search?")
+
+
+def test_tweet_title_includes_the_date_when_the_id_has_one():
+    assert slack_parser.tweet_title("https://x.com/nberpubs/status/1770873531364257837") == \
+        "Post by @nberpubs, 21 Mar 2024"
+    assert slack_parser.tweet_title("https://twitter.com/old/status/20") == "Post by @old"

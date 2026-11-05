@@ -119,8 +119,8 @@ def test_tweets_are_ready_and_titled_by_handle():
     from slack_parser import tweet_title
     assert scan.classify({"url": "https://x.com/u/status/1",
                           "metadata_source": "link"}) == ("ready", "")
-    assert tweet_title("https://x.com/MatthewStaiger/status/1770873531364257837") == \
-        "Post by @MatthewStaiger"
+    assert tweet_title("https://x.com/MatthewStaiger/status/1770873531364257837").startswith(
+        "Post by @MatthewStaiger, ")
 
 
 # ── Job ───────────────────────────────────────────────────────────────────────
@@ -300,3 +300,38 @@ def test_upload_reports_each_item_and_sends_notes_in_one_request(monkeypatch, tm
     assert Zot.calls == 2                         # the items, then all three notes
     assert result["notes_added"] == 3 and len(attached) == 1
     assert [l.split()[0] for l in lines] == ["Uploaded"] * 3
+
+
+def test_article_without_authors_year_or_doi_becomes_a_web_page():
+    p = {"url": "https://huduser.gov/cityscape", "item_type": "journalArticle", "title": "Cityscape"}
+    scan._tidy(p)
+    assert p["item_type"] == "webpage"
+    q = {"url": "https://a.org", "item_type": "journalArticle", "title": "T", "year": "2024"}
+    scan._tidy(q)
+    assert q["item_type"] == "journalArticle"
+
+
+def _scan_with(meta):
+    papers = [{"url": u, "comments": []} for u in meta]
+    job = scan.Job(papers, None, title_search=lambda *a: None,
+                   enrich=lambda p, *a: {"metadata_source": "translator", **meta[p["url"]]})
+    job.start()
+    _wait(job, scan.SCANNED)
+    return sorted(p["url"] for p in job.papers)
+
+
+def test_web_page_merges_into_the_paper_with_its_title_even_with_another_year():
+    assert _scan_with({
+        "https://t.com/collection": {"title": "Where Is the Housing Shortage?", "year": "2024",
+                                     "item_type": "webpage"},
+        "https://t.com/article": {"title": "Where Is the Housing Shortage?", "year": "2025",
+                                  "authors": ["Doe, J"], "doi": "10.1234/x"},
+    }) == ["https://t.com/article"]
+
+
+def test_short_titles_merge_only_with_the_same_year():
+    assert len(_scan_with({
+        "https://nber.org/w1": {"title": "Rent Guarantee Insurance", "year": "2024", "authors": ["A"]},
+        "https://nber.org/w1.pdf": {"title": "Rent Guarantee Insurance", "year": "2024", "authors": ["A"]},
+        "https://nber.org/old": {"title": "Rent Guarantee Insurance", "year": "2019", "authors": ["A"]},
+    })) == 2

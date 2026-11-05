@@ -138,6 +138,32 @@ def page_title(url: str) -> Optional[str]:
     return (parser.og_title or parser.title or None)
 
 
+def _is_site_name(title: str, url: str) -> bool:
+    """True when a page title is just the site's name ("OSF" on osf.io,
+    "Spotify" on open.spotify.com), which happens on pages built by JavaScript."""
+    host = urlsplit(url).netloc.lower().replace("-", "").replace(".", "")
+    words = re.findall(r"[a-z0-9]+", title.lower())
+    return not words or all(w in host for w in words)
+
+
+def _link_title(url: str, summary: Optional[str]) -> str:
+    """Title for a web page saved as a link: its own title, unless that is just
+    the site's name; then the AI's one-line description; then the URL."""
+    title = page_title(url)
+    if title and not _is_site_name(title, url):
+        return title
+    if summary:
+        return summary.strip().rstrip(".")
+    return title or url
+
+
+def _is_slack_message(url: str) -> bool:
+    parts = urlsplit(url)
+    host = parts.netloc.lower()
+    return (host == "slack.com" or host.endswith(".slack.com")) \
+        and parts.path.startswith("/archives/")
+
+
 def parse_citation_tags(html_bytes: bytes) -> dict[str, list[str]]:
     parser = _MetaTagParser()
     try:
@@ -200,7 +226,7 @@ def tags_to_fields(tags: dict[str, list[str]]) -> Optional[dict]:
                "citation_cover_date", "citation_year")
     year = re.search(r"\b(1[5-9]\d\d|20\d\d)\b", date or "")
     return {
-        "title": title, "authors": authors, "item_type": item_type, "journal": venue,
+        "title": clean_title(title), "authors": authors, "item_type": item_type, "journal": venue,
         "year": year.group(1) if year else None,
         "volume": one("citation_volume"), "issue": one("citation_issue"),
         "pages": f"{first}-{last}" if first and last else first,
@@ -318,7 +344,7 @@ def fetch_translator(url: str) -> Optional[dict]:
     """The Zotero item Citoid returns for `url`, or None if it returns nothing
     usable. Results are labelled metadata_source "translator"."""
     raw = _citoid_get(url)
-    if raw and not _is_translator_junk(raw):
+    if raw and not _is_translator_junk(raw, url):
         return raw
     return None
 
@@ -395,12 +421,14 @@ def _clean_doi(doi: Optional[str]) -> Optional[str]:
     return doi if _DOI_RE.match(doi) else None
 
 
-def _is_translator_junk(raw: dict) -> bool:
+def _is_translator_junk(raw: dict, url: str = "") -> bool:
     """
     True if Citoid's result is too thin to be a citation. Every web page has a
-    title, so also require an author, a date, an abstract, or a DOI.
+    title, so also require an author, a date, an abstract, or a DOI. A title
+    that is only the site's name ("- YouTube") means Citoid didn't see the page.
     """
-    if not (raw.get("title") or "").strip():
+    title = (raw.get("title") or "").strip()
+    if not title or (url and _is_site_name(title, url)):
         return True
     has_author   = bool(raw.get("creators"))
     has_year     = bool(raw.get("date"))
@@ -422,7 +450,7 @@ def translator_to_fields(raw: dict) -> dict:
     isbn = (isbn_raw[0] if isinstance(isbn_raw, list) and isbn_raw
             else isbn_raw if isinstance(isbn_raw, str) else None)
     return {
-        "title":      raw.get("title"),
+        "title":      clean_title(raw.get("title")),
         "authors":    _translator_creators(raw),
         "abstract":   raw.get("abstractNote"),
         "year":       year,
@@ -512,19 +540,41 @@ def crossref_to_fields(data: dict) -> dict:
     title_list = data.get("title") or []
     container  = data.get("container-title") or []
     abstract   = re.sub(r"<[^>]+>", " ", data.get("abstract") or "").strip() or None
+    item_type  = _CROSSREF_TYPE_MAP.get(data.get("type") or "", "journalArticle")
+    doi        = _clean_doi(data.get("DOI"))
+    # Where the work appeared. Without a journal name, a report or preprint is
+    # credited to its publisher (e.g. NBER); an article is left blank rather
+    # than credited to a publishing company. 10.2139 is SSRN's DOI prefix.
+    if container:
+        venue = container[0]
+    elif doi and doi.startswith("10.2139/"):
+        venue = "SSRN"
+    elif item_type in ("report", "preprint"):
+        venue = data.get("publisher")
+    else:
+        venue = None
     return {
-        "title":      title_list[0] if title_list else None,
+        "title":      clean_title(title_list[0]) if title_list else None,
         "authors":    _crossref_authors(data),
         "abstract":   abstract,
         "year":       _crossref_year(data),
-        "journal":    container[0] if container else data.get("publisher"),
-        "item_type":  _CROSSREF_TYPE_MAP.get(data.get("type") or "", "journalArticle"),
+        "journal":    venue,
+        "item_type":  item_type,
         "volume":     data.get("volume"),
         "issue":      data.get("issue"),
         "pages":      data.get("page"),
         "publisher":  data.get("publisher"),
-        "doi":        _clean_doi(data.get("DOI")),
+        "doi":        doi,
     }
+
+
+def clean_title(title: Optional[str]) -> Optional[str]:
+    """Remove HTML formatting tags (CrossRef titles can contain <i>, <sub>,
+    ...) and decode entities."""
+    if not title:
+        return title
+    import html as _html
+    return " ".join(_html.unescape(re.sub(r"<[^>]+>", "", title)).split()) or None
 
 
 def _crossref_authors(data: dict) -> list[str]:
@@ -827,7 +877,7 @@ def _llm_to_fields(d: dict) -> dict:
     # not a Paper field we persist. enrich_paper pops it (and _fetch_state) out
     # before merging.
     return {
-        "title":        d.get("title"),
+        "title":        clean_title(d.get("title")),
         "authors":      d.get("authors") or [],
         "abstract":     d.get("abstract"),
         "year":         str(d["year"]) if d.get("year") else None,
@@ -863,11 +913,20 @@ def enrich_paper(paper: dict, anthropic_key: Optional[str] = None,
     }
 
     # A tweet is saved as a plain link; it has no bibliographic metadata.
-    from slack_parser import is_tweet_url, tweet_title
+    from slack_parser import is_tweet_url, tweet_date, tweet_title
     if is_tweet_url(url):
         fields["metadata_source"] = "link"
         fields["item_type"] = "webpage"
         fields["title"] = tweet_title(url)
+        day = tweet_date(url)
+        if day:
+            fields["year"] = str(day.year)
+        return fields
+
+    # A link to another Slack message is a reference within Slack, not a source.
+    if _is_slack_message(url):
+        fields["metadata_source"] = "non_paper"
+        fields["summary"] = "Link to a Slack message"
         return fields
 
     # A file uploaded to Slack: download it and have the AI read it. The
@@ -992,7 +1051,7 @@ def enrich_paper(paper: dict, anthropic_key: Optional[str] = None,
             elif fetch_state == "ok" and category == "link":
                 fields["metadata_source"] = "link"
                 fields["item_type"] = "webpage"
-                fields["title"] = page_title(url) or url
+                fields["title"] = _link_title(url, fields.get("summary"))
             elif fetch_state == "dead" and category != "paper":
                 fields["metadata_source"] = "non_paper"
             else:

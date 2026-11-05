@@ -9,15 +9,37 @@ shared by every session, so a refresh shows the same page.
 
 from __future__ import annotations
 
+import os
+import sys
 import tempfile
 import time
 
 import streamlit as st
 
-import config
-import scan
-import zotero_client
-import zotero_index
+# After a push, Streamlit Cloud re-runs this file with the new code but keeps
+# the old versions of the modules below loaded, so the two disagree until the
+# app is rebooted. Drop the loaded copies when any file has changed since they
+# were loaded; they are then imported fresh. (Like a restart, this clears the
+# current scan.)
+_LOCAL_MODULES = ("records", "config", "http_fetch", "slack_parser", "pdf_storage",
+                  "zotero_index", "metadata", "zotero_client", "scan")
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _code_stamp() -> tuple:
+    return tuple(os.path.getmtime(os.path.join(_HERE, f"{name}.py"))
+                 for name in _LOCAL_MODULES)
+
+
+if getattr(sys, "_slack_to_zotero_code", None) != _code_stamp():
+    for _name in _LOCAL_MODULES:
+        sys.modules.pop(_name, None)
+    sys._slack_to_zotero_code = _code_stamp()
+
+import config  # noqa: E402
+import scan  # noqa: E402
+import zotero_client  # noqa: E402
+import zotero_index  # noqa: E402
 
 st.set_page_config(page_title="Slack to Zotero", layout="wide")
 
@@ -55,14 +77,14 @@ def zotero_ready() -> bool:
 # ── Layout helpers ────────────────────────────────────────────────────────────
 
 def step_header(number: int, title: str, state: str) -> None:
+    """A step's heading; greyed out for a step not reached yet. A finished
+    step's summary line starts with "Done" (see summary())."""
     text = f"{number}. {title}"
-    if state == LATER:
-        st.subheader(f":gray[{text}]", anchor=False)
-        return
-    left, right = st.columns([6, 1])
-    left.subheader(text, anchor=False)
-    if state == DONE_STATE:
-        right.markdown(":gray[Done]")
+    st.subheader(f":gray[{text}]" if state == LATER else text, anchor=False)
+
+
+def summary(parts: list[str], done: bool) -> None:
+    st.caption(" · ".join((["Done"] if done else []) + parts))
 
 
 def _minutes(seconds: float) -> str:
@@ -88,7 +110,7 @@ def step_export(job: scan.Job | None) -> None:
         if src.get("files"):
             parts.append(_plural(src["files"], "day-file"))
         parts.append(f"{job.n_sources} links and documents")
-        st.caption(" · ".join(parts))
+        summary(parts, done=True)
         if job.snapshot()["phase"] in (scan.SCANNED, scan.DONE, scan.FAILED):
             start_over_control()
         return
@@ -253,8 +275,8 @@ def step_scan(job: scan.Job | None) -> None:
     existing = job.items(scan.EXISTING)
     step_header(2, "Scan results", DONE_STATE)
     took = _minutes((job.finished_at or time.time()) - job.started_at)
-    st.caption(f"Scanned {job.n_sources} in {took} · {len(ready)} ready · "
-               f"{len(review)} review · {len(existing)} already in Zotero")
+    summary([f"Scanned {job.n_sources} in {took}", f"{len(ready)} ready",
+             f"{len(review)} review", f"{len(existing)} already in Zotero"], done=True)
     if snap["fatal_error"]:
         st.error("The scan stopped because of an error. Items it didn't reach are in Review.")
         with st.expander("Details"):
@@ -311,16 +333,17 @@ def step_upload(job: scan.Job | None) -> None:
     n_selected = len(job.selected())
     has_uploaded = phase == scan.DONE
 
-    step_header(3, title, DONE_STATE if has_uploaded and not n_selected else CURRENT)
+    finished = has_uploaded and not n_selected
+    step_header(3, title, DONE_STATE if finished else CURRENT)
 
     if has_uploaded:
-        line = f"Uploaded {len(uploaded)}"
+        parts = [f"Uploaded {len(uploaded)}"]
         if failed:
-            line += f" · {len(failed)} failed"
+            parts.append(f"{len(failed)} failed")
         skipped = snap["skipped_existing"]
         if skipped:
-            line += f" · {skipped} skipped because they were added to Zotero after the scan"
-        st.caption(line)
+            parts.append(f"{skipped} skipped because they were added to Zotero after the scan")
+        summary(parts, done=finished)
         if failed:
             st.dataframe([{"Title": p.get("title") or p["url"], "Error": p["upload_error"]}
                           for p in failed], hide_index=True)

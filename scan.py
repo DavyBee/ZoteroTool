@@ -318,6 +318,7 @@ class Job:
                     fields = fut.result()
                     with self.lock:
                         paper.update(fields)
+                        _tidy(paper)
                         hit = self.index.match(paper) if self.index else None
                         if hit:
                             self._mark_existing(paper, hit)
@@ -353,13 +354,9 @@ class Job:
             d = doi_key(p.get("doi"))
             t, y = title_key(p.get("title")), year_of(p.get("year"))
             target = by_doi.get(d) if d else None
-            if target is None and t and len(t.split()) >= 4:
-                # Same title, and the years agree or one is unknown (a landing
-                # page and the article it describes). Different known years
-                # are different editions and are kept apart.
+            if target is None and t:
                 target = next((q for q in by_title.get(t, [])
-                               if not y or not year_of(q.get("year"))
-                               or year_of(q.get("year")) == y), None)
+                               if _same_work(p, q, t, y)), None)
             if target is None:
                 if d:
                     by_doi[d] = p
@@ -472,6 +469,28 @@ class Job:
                     "upload_result": self.upload_result,
                     "skipped_existing": self.skipped_existing,
                     "stopping": self.stop_requested and self.phase == SCANNING}
+
+
+def _same_work(p: dict, q: dict, t: str, y: Optional[str]) -> bool:
+    """Whether two items with the same title are one work: a web page without
+    authors next to the paper it describes, or the same year (three words or
+    more), or one year unknown (four words or more). Different years are
+    different versions, such as a working paper and the published article."""
+    words = len(t.split())
+    qy = year_of(q.get("year"))
+    if not p.get("authors") and p.get("item_type") == "webpage" and words >= 3:
+        return True
+    if y and qy:
+        return y == qy and words >= 3
+    return words >= 4
+
+
+def _tidy(p: dict) -> None:
+    """An "article" with no authors, no year, and no DOI is usually a journal
+    homepage or issue page; save it as a web page."""
+    if p.get("item_type") in ("journalArticle", "preprint", "conferencePaper") \
+            and not p.get("authors") and not p.get("year") and not doi_key(p.get("doi")):
+        p["item_type"] = "webpage"
 
 
 def _prepare_for_upload(p: dict) -> None:

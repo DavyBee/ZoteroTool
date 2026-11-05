@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import sys
 import time
 
 import pytest
@@ -10,8 +12,19 @@ from streamlit.testing.v1 import AppTest
 import scan
 
 
+LOCAL_MODULES = ("records", "config", "http_fetch", "slack_parser", "pdf_storage",
+                 "zotero_index", "metadata", "zotero_client", "scan")
+
+
+def _code_stamp():
+    here = os.path.dirname(os.path.abspath(__file__))
+    return tuple(os.path.getmtime(os.path.join(here, f"{m}.py")) for m in LOCAL_MODULES)
+
+
 @pytest.fixture(autouse=True)
 def env(monkeypatch):
+    # The modules these tests imported are current, so the page should use them.
+    monkeypatch.setattr(sys, "_slack_to_zotero_code", _code_stamp(), raising=False)
     monkeypatch.setenv("ZOTERO_API_KEY", "test")
     monkeypatch.setenv("ZOTERO_LIBRARY_ID", "1")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -77,7 +90,7 @@ def test_finished_scan_keeps_every_step_on_the_page():
     at = _page()                                     # a fresh session = a refresh
     assert not at.exception
     text = _text(at)
-    assert "export.zip · #its-lit · 3 day-files · 2 links and documents" in text
+    assert "Done · export.zip · #its-lit · 3 day-files · 2 links and documents" in text
     assert "1 ready · 1 review · 0 already in Zotero" in text
     assert "**Ready (1)**" in text and "**Review (1)**" in text
     assert "Upload 1 to Zotero" in _buttons(at)
@@ -105,7 +118,7 @@ def test_results_stay_after_upload_and_more_can_be_uploaded():
     _wait(job, scan.DONE)
     at = _page()
     text = _text(at)
-    assert "Uploaded 1" in text
+    assert "Done · Uploaded 1" in text
     assert "**Ready (1)**" in text                   # the results are still there
     assert "New scan" in _buttons(at)
     assert "Upload 1 to Zotero" not in _buttons(at)   # nothing left selected
@@ -120,3 +133,15 @@ def test_no_emoji_in_page_text():
     _scanned_job()
     text = _text(_page())
     assert all(ord(ch) < 0x2190 for ch in text), text
+
+
+def test_changed_code_is_loaded_fresh(monkeypatch):
+    saved = {m: sys.modules[m] for m in LOCAL_MODULES if m in sys.modules}
+    try:
+        monkeypatch.setattr(sys, "_slack_to_zotero_code", ("old",), raising=False)
+        at = _page()
+        assert not at.exception
+        assert sys.modules["scan"] is not saved["scan"]      # imported again
+        assert sys._slack_to_zotero_code == _code_stamp()
+    finally:
+        sys.modules.update(saved)

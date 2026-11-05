@@ -255,3 +255,45 @@ def test_tweets_get_a_title_without_any_lookup(monkeypatch):
     assert calls == []
     assert (out["metadata_source"], out["title"], out["item_type"]) == \
         ("link", "Post by @LevyAntoine", "webpage")
+
+
+def test_link_title_skips_titles_that_are_just_the_site_name(monkeypatch):
+    _serve(monkeypatch, {
+        "https://osf.io/x": b"<title>OSF</title>",
+        "https://jchs.org/report": b"<title>The State of the Nation's Housing</title>",
+    })
+    assert metadata._link_title("https://osf.io/x", "Preprint on minimum wages.") == \
+        "Preprint on minimum wages"
+    assert metadata._link_title("https://jchs.org/report", "x") == "The State of the Nation's Housing"
+    assert metadata._link_title("https://blocked.org", None) == "https://blocked.org"
+
+
+def test_links_to_slack_messages_are_not_sources(monkeypatch):
+    calls = []
+    _stub_stages(monkeypatch, calls)
+    out = metadata.enrich_paper(
+        {"url": "https://lab.slack.com/archives/C6ARJE84B/p1762635072886359"}, None, "/dev/null")
+    assert calls == [] and out["metadata_source"] == "non_paper"
+    assert not metadata._is_slack_message("https://lab.slack.com/files/U1/F1/paper.pdf")
+
+
+def test_titles_lose_html_tags():
+    assert metadata.clean_title("<i>Upsold:</i> Real Estate &amp; Inequality") == \
+        "Upsold: Real Estate & Inequality"
+
+
+def test_citoid_title_that_is_only_the_site_name_is_rejected():
+    assert metadata._is_translator_junk({"title": "- YouTube", "date": "2024"},
+                                        "https://www.youtube.com/watch?v=1")
+    assert not metadata._is_translator_junk({"title": "A Real Talk", "date": "2024"},
+                                            "https://www.youtube.com/watch?v=1")
+
+
+@pytest.mark.parametrize("record, venue", [
+    ({"type": "posted-content", "DOI": "10.2139/ssrn.1", "publisher": "Elsevier BV"}, "SSRN"),
+    ({"type": "journal-article", "DOI": "10.1234/x", "publisher": "Elsevier BV"}, None),
+    ({"type": "report", "DOI": "10.3386/w1", "publisher": "NBER"}, "NBER"),
+    ({"type": "journal-article", "container-title": ["Demography"], "publisher": "Duke"}, "Demography"),
+])
+def test_journal_falls_back_to_publisher_only_for_reports_and_preprints(record, venue):
+    assert metadata.crossref_to_fields({"title": ["T"], **record})["journal"] == venue

@@ -17,6 +17,7 @@ into `hints`. Channel bookkeeping (joins, purpose/name changes, etc.) is skipped
 
 from __future__ import annotations
 
+import datetime
 import html
 import json
 import re
@@ -78,7 +79,30 @@ _TWITTER_HOSTS = {"twitter.com", "www.twitter.com", "x.com", "www.x.com",
 _EZPROXY_HOST_RE = re.compile(r"^([a-z0-9-]+)\.ezproxy\.[a-z0-9.-]+$", re.I)
 
 
+# Redirect links that carry the real address in a query parameter: Outlook
+# safelinks, Google and Google Scholar redirects, Facebook's link shim.
+_REDIRECTS = (
+    (re.compile(r"(^|\.)safelinks\.protection\.outlook\.com$"), "/", "url"),
+    (re.compile(r"^(www\.)?google\.[a-z.]+$"), "/url", "q"),
+    (re.compile(r"^(www\.)?google\.[a-z.]+$"), "/url", "url"),
+    (re.compile(r"^scholar\.google\.[a-z.]+$"), "/scholar_url", "url"),
+    (re.compile(r"^l\.facebook\.com$"), "/l.php", "u"),
+)
+
+
+def _unwrap_redirect(url: str) -> str:
+    parts = urlsplit(url)
+    host, path = parts.netloc.lower(), parts.path or "/"
+    params = dict(parse_qsl(parts.query))
+    for host_re, path_prefix, param in _REDIRECTS:
+        target = params.get(param, "")
+        if host_re.search(host) and path.startswith(path_prefix) and target.startswith("http"):
+            return target
+    return url
+
+
 def _unproxy(url: str) -> str:
+    url = _unwrap_redirect(url)
     parts = urlsplit(url)
     host = parts.netloc.lower()
     if ".ezproxy." in host or host.startswith("ezproxy."):
@@ -121,10 +145,25 @@ def is_tweet_url(url: str) -> bool:
     return bool(_TWEET_RE.match((url or "").strip()))
 
 
+# Post ids since 2010 encode their creation time: milliseconds since this epoch,
+# shifted left 22 bits (X's "Snowflake" ids).
+_SNOWFLAKE_EPOCH_MS = 1288834974657
+
+
+def tweet_date(url: str) -> Optional[datetime.date]:
+    m = re.search(r"/status/(\d+)", url or "")
+    if not m or int(m.group(1)) < 2 ** 40:          # older ids carry no date
+        return None
+    ms = (int(m.group(1)) >> 22) + _SNOWFLAKE_EPOCH_MS
+    return datetime.datetime.fromtimestamp(ms / 1000, datetime.timezone.utc).date()
+
+
 def tweet_title(url: str) -> str:
-    """'Post by @handle' for a tweet link."""
+    """'Post by @handle, 12 Mar 2024' for a tweet link."""
     m = _TWEET_RE.match((url or "").strip())
-    return f"Post by @{m.group(1)}" if m else "Post on X"
+    title = f"Post by @{m.group(1)}" if m else "Post on X"
+    day = tweet_date(url)
+    return f"{title}, {day.day} {day:%b %Y}" if day else title
 
 
 # ── Types ─────────────────────────────────────────────────────────────────────
