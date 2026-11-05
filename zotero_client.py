@@ -1,14 +1,9 @@
 """
-zotero_client.py — Push pipeline records to a shared Zotero library.
+zotero_client.py — Create items in the Zotero library.
 
-Eligibility for programmatic upload:
-    metadata_source in (translator, crossref_doi, llm) AND title set AND
-    zotero_key not yet assigned.
-
-pdf_saved and needs_manual papers are excluded — those go through the
-manual Zotero desktop workflow. PDFs are never attached programmatically;
-all saved PDFs go to pdfs_to_upload/ for import via Zotero desktop so
-Zotero's recognizer remains the authoritative PDF handler.
+For each source selected on the page: one item with its bibliographic
+metadata, its file attached when one was downloaded, and a child note with
+the Slack discussion. Nothing else is written (no tags, no extra collections).
 """
 
 from __future__ import annotations
@@ -29,7 +24,7 @@ from pyzotero import zotero
 
 import config
 import pdf_storage
-from database import Database, Paper, normalize_url, READY_SOURCES
+from records import Paper
 
 
 BATCH_SIZE = 50          # Zotero API hard limit per create_items call
@@ -124,39 +119,17 @@ def make_zotero_client() -> zotero.Zotero:
     return zotero.Zotero(library_id, library_type, api_key)
 
 
-def uploadable_papers(db: Database) -> list[Paper]:
-    """Papers ready for programmatic upload: right source, have title, not yet pushed.
-
-    translator / crossref_doi records are auto-approved (Zotero's own engine).
-    LLM records are lower-confidence, so they only become uploadable once a human
-    has accepted them in the GUI (the `reviewed` flag). This guarantees every LLM
-    item is eyeballed before it lands in the shared library.
-    """
-    out = []
-    for p in db.all_papers():
-        if p.get("zotero_key") or p.get("upload_error"):
-            continue                      # error papers are parked for fixing, not Ready
-        src = p.get("metadata_source")
-        if src in READY_SOURCES:
-            out.append(p)
-        elif src == "llm" and p.get("reviewed"):
-            out.append(p)
-    return out
-
-
 def upload_papers(
     papers: list[Paper],
     zot: zotero.Zotero,
-    db: Optional[Database] = None,
     progress_cb: Optional[Callable[[int, int], None]] = None,
 ) -> dict:
     """
     Upload papers to Zotero in batches of BATCH_SIZE.
 
-    For each successfully created item, sets paper["zotero_key"], and writes
-    zotero_key and uploaded_at back to the DB when one is given. A rejected
-    item gets paper["upload_error"]. PDFs are handled separately — all saved PDFs go to
-    pdfs_to_upload/ for import via Zotero desktop.
+    Sets paper["zotero_key"] on each item created and paper["upload_error"]
+    on each one Zotero rejects. Attachment and note failures don't fail the
+    item; they are listed in the returned errors.
 
     Returns:
         {total, uploaded, pdfs_attached, failed, errors: [(url, msg), ...]}
@@ -172,9 +145,8 @@ def upload_papers(
         try:
             resp = _create_items(zot, items)
         except Exception as exc:
-            # Whole batch failed (network error, auth failure, etc.).
-            # Don't touch last_error — those papers are still enriched and
-            # will be retried on the next upload run automatically.
+            # Whole batch failed (network error, auth failure, etc.). The page
+            # offers "Retry failed" for these.
             msg = f"batch upload failed: {exc}"
             for p in batch:
                 errors.append((p["url"], msg))
@@ -186,22 +158,9 @@ def upload_papers(
             paper = batch[int(idx_str)]
             zotero_key = item_data["data"]["key"]
             paper["zotero_key"] = zotero_key
-            if db is not None:
-                db.mark_uploaded(normalize_url(paper["url"]), zotero_key)
             n_ok += 1
 
-            # Attach the local file for ANY uploaded record that has one. We now
-            # LLM-read PDFs/docx (better than Zotero's recognizer for the working
-            # papers/reports this lab shares) and upload via the API, so the file
-            # is attached here and the Slack notes ride along — no manual drag-in.
-            # (Papers with no extractable text stay pdf_saved → drag-in fallback,
-            # and pdf_saved isn't uploadable, so it never reaches this loop.)
-            # ensure_local_pdf makes the file present even after a cloud restart
-            # wiped pdfs/: disk → durable pdf_blobs copy → just-in-time
-            # re-download (the pdf_too_large path). Papers that never landed a
-            # PDF are skipped outright — no download attempt at upload time
-            # (see ensure_local_pdf's docstring: retrying blocked publishers
-            # here made every upload run crawl).
+            # Attach the downloaded file, if there is one.
             if paper.get("local_pdf_path"):
                 local_pdf = pdf_storage.ensure_local_pdf(paper)
                 if local_pdf:
@@ -213,8 +172,8 @@ def upload_papers(
                         errors.append((paper["url"], f"pdf_attach failed: {exc}"))
                 else:
                     errors.append((paper["url"],
-                                   "pdf_attach skipped: file not on disk and "
-                                   "re-download failed (item uploaded without PDF)"))
+                                   "pdf_attach skipped: the downloaded file is gone "
+                                   "(the app restarted); item uploaded without it"))
 
             # Attach the Slack discussion (original message + thread replies) as a
             # child note. Non-fatal: the parent is already uploaded, so a note
@@ -238,12 +197,8 @@ def upload_papers(
             # shows in the Upload tab's fixable error list (vs whole-batch network
             # failures above, which are transient and left to auto-retry).
             paper["upload_error"] = msg
-            if db is not None:
-                db.update_paper(normalize_url(paper["url"]), upload_error=msg)
             n_fail += 1
 
-        if db is not None:
-            db.save()
         if progress_cb:
             progress_cb(min(batch_start + BATCH_SIZE, total), total)
 

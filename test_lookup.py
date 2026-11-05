@@ -226,3 +226,12 @@ def test_ai_reply_without_text_is_an_error_not_a_crash(monkeypatch, tmp_path):
                              page_text="x " * 50)
     assert out is None
     assert "no text in response" in (tmp_path / "audit.jsonl").read_text()
+
+
+@pytest.mark.parametrize("doi, cleaned", [
+    ("10.2139/", None), ("10.1093/", None), ("10.2139", None), ("", None), ("not-a-doi", None),
+    (None, None), ("10.2139/ssrn.4445621", "10.2139/ssrn.4445621"),
+    ("10.1093/sf/soab123.", "10.1093/sf/soab123"),
+])
+def test_clean_doi(doi, cleaned):
+    assert metadata._clean_doi(doi) == cleaned

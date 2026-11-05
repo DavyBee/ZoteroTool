@@ -38,8 +38,8 @@ from urllib.error import HTTPError, URLError
 
 import config
 import http_fetch
-from database import Comment
-from pdf_storage import save_pdf, save_slack_file, copy_to_upload_queue
+from records import Comment
+from pdf_storage import save_pdf, save_slack_file
 
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────────
@@ -321,27 +321,6 @@ def fetch_translator(url: str) -> Optional[dict]:
     return None
 
 
-def fetch_webpage_metadata(url: str) -> Optional[dict]:
-    """
-    Run Citoid on a URL and return its raw extraction WITHOUT the citation-grade
-    junk filter that fetch_translator applies.
-
-    fetch_translator() rejects a title-only result because, for a paper, a
-    bare webpage is junk. But for "save this URL as whatever Zotero makes of
-    it" (the link-upload path for non-papers), that title-only webpage item is
-    exactly what we want — it's what the Zotero connector / "Save to Zotero"
-    button produces for an arbitrary page (the Embedded Metadata translator
-    reading <title> / og: tags into a webpage item).
-
-    Returns the flat fields dict (same shape as translator_to_fields), or None
-    if Citoid returned nothing usable at all.
-    """
-    raw = _citoid_get(url)
-    if raw and (raw.get("title") or "").strip():
-        return translator_to_fields(raw)
-    return None
-
-
 def lookup_doi(doi: str) -> Optional[tuple[str, dict]]:
     """
     Resolve a DOI to a flat fields dict via a direct CrossRef call. CrossRef is
@@ -364,8 +343,8 @@ def _extract_pdf_text(pdf_bytes: bytes) -> str:
     That covers the title/abstract/body of essentially all academic PDFs.
 
     Returns "" when nothing readable comes out — a scanned/image-only PDF, or a
-    file pypdf can't parse — which the cascade reads as "no text" and falls back
-    to the manual drag-in path.
+    file pypdf can't parse — which the cascade reads as "no text"; the AI step
+    then reads the first pages as images instead.
     """
     import logging
     from io import BytesIO
@@ -919,7 +898,7 @@ def enrich_paper(paper: dict, anthropic_key: Optional[str] = None,
     # paper a tweet points to is recovered separately (expand_tweets); the tweet
     # itself stays a bare bookmark in the Links tab, so it can't masquerade as a
     # citable work or collide with that paper in the Duplicates tab.
-    from url_expander import is_tweet_url
+    from slack_parser import is_tweet_url
     if is_tweet_url(url):
         fields["metadata_source"] = "link"
         fields["item_type"] = "webpage"
@@ -942,18 +921,11 @@ def enrich_paper(paper: dict, anthropic_key: Optional[str] = None,
             path, size = got
             fields["local_pdf_path"] = path
             fields["pdf_size_bytes"] = size
-            # Over the durable-storage cap: the file is on this session's disk
-            # but NOT in the pdf_blobs table, so it won't survive a cloud
-            # restart. Flagged so the UI can say so; ensure_local_pdf
-            # re-downloads it just-in-time when it's needed for upload/export.
-            fields["pdf_too_large"] = size > config.PDF_BLOB_MAX_BYTES or None
         if anthropic_key:
             fields.update(enrich_local_file(path, url, paper.get("comments") or [],
                                             anthropic_key, audit_log_path))
         else:
             fields["metadata_source"] = "pdf_saved"
-        if fields.get("metadata_source") == "pdf_saved":
-            copy_to_upload_queue(path)
         return fields
 
     # Metadata and the PDF are fetched independently and we keep both outcomes.
@@ -970,9 +942,6 @@ def enrich_paper(paper: dict, anthropic_key: Optional[str] = None,
         path, size = pdf_result
         fields["local_pdf_path"] = path
         fields["pdf_size_bytes"] = size
-        # See the Slack branch above: over the 25 MB durable cap → disk-only
-        # this session, re-downloaded on demand at upload/export time.
-        fields["pdf_too_large"] = size > config.PDF_BLOB_MAX_BYTES or None
 
     # 1. CrossRef, if we already have a DOI (from Slack). Authoritative for DOIs,
     #    and keeps the common case off the free, SLA-less Citoid service.
@@ -1021,8 +990,6 @@ def enrich_paper(paper: dict, anthropic_key: Optional[str] = None,
                                             anthropic_key, audit_log_path))
         else:
             fields["metadata_source"] = "pdf_saved"
-        if fields.get("metadata_source") == "pdf_saved":
-            copy_to_upload_queue(path)
         return fields
 
     # 3. LLM fallback
@@ -1109,11 +1076,8 @@ def _merge_truthy(target: dict, source: dict) -> None:
 
 
 # ── Local file (PDF / .docx) metadata via the LLM ─────────────────────────────
-# Preferred over Zotero's desktop recognizer for PDF-only papers: the recognizer
-# (recognize.zotero.org) comes back bare for working papers / reports / preprints,
-# and the drag-in path it requires can't attach the Slack notes. Reading the
-# file's text with the LLM gives better metadata for those AND lets us upload via
-# the API (PDF attached + notes). Drag-in (pdf_saved) stays as a fallback.
+# For a PDF with no other metadata (and for Slack uploads), the AI reads the
+# file itself. If that fails too, the item is "pdf_saved" and goes to Review.
 
 def _extract_docx_text(path: str) -> str:
     """Pull the body text out of a .docx (stdlib zipfile — no dependency), with
@@ -1154,7 +1118,7 @@ def enrich_local_file(file_path: str, url: str, comments: list[Comment],
     Returns the fields to merge into the paper:
       - title (or useful partial) found → metadata_source "llm" + the metadata
       - otherwise (no key, unreadable/scanned, or nothing extracted) → "pdf_saved",
-        falling back to the manual drag-in path (the file is on disk either way).
+        which goes to Review (the file is still attached if it is uploaded).
     Routing-only hints (category / _fetch_state) are dropped; summary is kept.
 
     A PDF with no usable text layer (scanned / image-only — under
@@ -1189,5 +1153,5 @@ def enrich_local_file(file_path: str, url: str, comments: list[Comment],
             return fields
         if out.get("summary"):
             fields["summary"] = out["summary"]
-    fields["metadata_source"] = "pdf_saved"        # fall back to manual drag-in
+    fields["metadata_source"] = "pdf_saved"
     return fields

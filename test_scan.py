@@ -241,3 +241,30 @@ def test_landing_page_merges_with_article_but_editions_stay_apart():
     urls = sorted(p["url"] for p in job.papers)
     assert urls == ["https://jchs.org/2023", "https://jchs.org/2024",
                     "https://t.com/doi/10.1234/x"]
+
+
+# ── URL normalization and tweet detection ────────────────────────────────────
+
+from records import normalize_url
+from slack_parser import is_tweet_url
+
+
+def test_normalize_url_keeps_the_query_so_ssrn_papers_stay_distinct():
+    ssrn = "https://papers.ssrn.com/sol3/papers.cfm?abstract_id={}"
+    a, b, c = (normalize_url(ssrn.format(i)) for i in (4941708, 4554831, 4480068))
+    assert len({a, b, c}) == 3
+
+
+def test_normalize_url_lowercases_scheme_and_host_only():
+    assert normalize_url("HTTPS://Example.COM/Path/To/") == "https://example.com/Path/To"
+
+
+@pytest.mark.parametrize("url, tweet", [
+    ("https://twitter.com/user/status/1785127046756343980/photo/1", True),
+    ("https://x.com/user/status/1773475907858272686", True),
+    ("https://mobile.twitter.com/user/status/1", True),
+    ("https://x.com/user", False),
+    ("https://example.com/status/1", False),
+])
+def test_is_tweet_url(url, tweet):
+    assert is_tweet_url(url) is tweet

@@ -23,8 +23,8 @@ from typing import Callable, Optional
 
 import metadata
 import slack_parser
-from database import _new_paper, normalize_url
-from url_expander import is_tweet_url
+from records import new_paper, normalize_url
+from slack_parser import is_tweet_url
 from zotero_index import (LibraryIndex, doi_key, title_key, titles_match,
                           year_of)
 
@@ -114,7 +114,7 @@ def collect_papers(paths: list[str], user_map: dict[str, str]) -> list[dict]:
         if key not in papers and doi and doi.lower() in by_doi:
             key = by_doi[doi.lower()]
         if key not in papers:
-            papers[key] = _new_paper(url, doi)
+            papers[key] = new_paper(url, doi)
             if doi:
                 by_doi[doi.lower()] = key
         p = papers[key]

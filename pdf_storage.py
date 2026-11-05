@@ -1,35 +1,19 @@
 """
-pdf_storage.py — Best-effort PDF download + local storage.
+pdf_storage.py — Download a source's PDF so it can be attached in Zotero.
 
-This is the new first stage of the metadata pipeline. The premise: if we can
-get the PDF locally, the lab member imports it into Zotero desktop and lets
-Zotero's "Retrieve Metadata for PDF" recognizer fill in everything. We don't
-have to extract metadata ourselves — we just have to land the file.
+save_pdf(url) tries, in order:
+    1. GET the URL. If the response is a real PDF (Content-Type or the %PDF
+       magic bytes), save it.
+    2. If the response is HTML, follow its <meta name="citation_pdf_url"> tag
+       (the same Highwire convention as the other citation_* tags) once.
+    3. Anything else (paywall page, bot block, error): no PDF.
 
-What `save_pdf(url)` tries, in order:
-    1. GET the URL. If the response is a real PDF (Content-Type or %PDF
-       magic-byte check), save it. Done.
-    2. If the response is HTML, scan it for a `<meta name="citation_pdf_url">`
-       tag — a Google-Scholar / Zotero standard that most major academic
-       publishers (Wiley, Nature, Science, JAMA, BMJ, Cell, etc.) include in
-       their landing-page HTML. Follow that single redirect, fetch, save.
-    3. Anything else (paywall HTML stub, bot block, JS-rendered link, error)
-       → return None and let the caller fall through to the metadata cascade.
+save_slack_file downloads a document uploaded to Slack, using the expiring
+url_private link from the export.
 
-We never chain meta-tag follows past depth 1; we never run JavaScript; we
-never share browser cookies. This keeps the dependency surface tiny and the
-failure modes obvious. More elaborate strategies (Unpaywall, headless
-browser) are intentionally future work.
-
-Design notes:
-- Files are saved as `pdfs/<sha256-of-normalized-url>[..16].pdf`. Hash-based
-  filenames give us deduplication for free and avoid filesystem-illegal
-  characters in URLs.
-- The `%PDF` magic-byte check is the single most important defense against
-  saving HTML paywall stubs that some publishers serve in place of the PDF.
-- Size cap (config.PDF_MAX_BYTES) prevents a single oversized PDF from
-  filling the disk. Hard read cap (config.PDF_FETCH_BYTES) protects against
-  servers that ignore Range/length headers entirely.
+Files are saved as pdfs/<hash of URL>.<ext>, which avoids illegal characters
+and makes repeat downloads free. The %PDF check keeps HTML paywall pages from
+being saved as PDFs. config.PDF_MAX_BYTES caps file size.
 """
 
 from __future__ import annotations
@@ -37,7 +21,6 @@ from __future__ import annotations
 import hashlib
 import os
 import re
-import shutil
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urljoin
@@ -53,9 +36,6 @@ def save_pdf(url: str) -> Optional[tuple[str, int]]:
     Try to download and locally save a PDF for `url`. Returns (path, size_in_
     bytes) on success, or None if no PDF could be obtained.
 
-    Only saves to pdfs/ — the caller (enrich_paper) decides whether to also
-    copy to pdfs_to_upload/ depending on the final metadata_source outcome.
-
     Idempotent: if the target file already exists on disk and is a valid
     PDF, returns its path immediately without re-downloading.
     """
@@ -63,7 +43,6 @@ def save_pdf(url: str) -> Optional[tuple[str, int]]:
 
     target = _target_path_for(url)
     if target.exists() and _looks_like_pdf_file(target):
-        _mirror_file_to_db(target)   # covers files saved before pdf_blobs existed
         return (str(target), target.stat().st_size)
 
     # Pass 1: fetch the URL itself
@@ -85,33 +64,6 @@ def save_pdf(url: str) -> Optional[tuple[str, int]]:
     return None
 
 
-def delete_local_pdfs(local_pdf_path: Optional[str]) -> int:
-    """Remove a paper's downloaded PDF files from the LOCAL filesystem — the
-    canonical pdfs/<hash>.pdf and any copy sitting in pdfs_to_upload/ — when
-    the paper is deleted or reset. The durable pdf_blobs copy is NOT touched
-    here: deleting it inline was one network round-trip to Turso per paper, so
-    Database queues those (see _drop_paper_pdf) and save() deletes them in one
-    batched statement.
-
-    Filenames are hash-of-URL, so each paper owns a distinct file; removing one
-    paper's PDF can never affect another's. No-op (returns 0) when there's no
-    path or the files are already gone. Returns the number of files removed.
-    """
-    if not local_pdf_path:
-        return 0
-    src = Path(local_pdf_path)
-    queue_copy = config.PROJECT_ROOT / "pdfs_to_upload" / src.name
-    removed = 0
-    for target in (src, queue_copy):
-        try:
-            if target.is_file():
-                target.unlink()
-                removed += 1
-        except OSError:
-            pass
-    return removed
-
-
 # Slack-uploaded document types we accept (paper manuscripts). Images, slide
 # decks, and spreadsheets are deliberately excluded — they aren't papers.
 _SLACK_DOC_EXTS = (".pdf", ".docx", ".doc", ".rtf", ".odt")
@@ -130,21 +82,17 @@ def save_slack_file(download_url: str, key_url: str,
                     filename: str = "") -> Optional[tuple[str, int]]:
     """Download a Slack-uploaded document (PDF or Word/RTF/ODT) from the
     token-bearing url_private, stored keyed by `key_url` (the stable permalink)
-    and KEEPING the original extension so Zotero handles the file correctly when
-    the lab member drags it in.
+    and keeping the original extension so Zotero handles the file correctly.
 
     PDFs get the %PDF magic-byte check. Other document types are accepted unless
     the response is HTML — Slack serves the real file via its token, so the only
     thing to reject is a login/error page (i.e. an expired token). Size cap and
-    idempotency (on key_url) as for save_pdf. Returns (path, size) or None.
-    (Note: Zotero's metadata recognizer is PDF-only, so non-PDF docs land in the
-    drag-in folder as a fallback — see metadata.enrich_local_file.)"""
+    idempotency (on key_url) as for save_pdf. Returns (path, size) or None."""
     config.PDFS_DIR.mkdir(parents=True, exist_ok=True)
     ext = _slack_doc_ext(filename)
     digest = hashlib.sha256(key_url.encode("utf-8")).hexdigest()[:16]
     target = config.PDFS_DIR / f"{digest}{ext}"
     if target.exists() and target.stat().st_size > 0:
-        _mirror_file_to_db(target)   # covers files saved before pdf_blobs existed
         return (str(target), target.stat().st_size)
     body, content_type = _fetch(download_url)
     if body is None:
@@ -157,21 +105,6 @@ def save_slack_file(download_url: str, key_url: str,
     return _write_if_within_limit(target, body)
 
 
-def copy_to_upload_queue(local_pdf_path: str) -> None:
-    """
-    Copy a pdf_saved PDF into pdfs_to_upload/ for Zotero desktop drag-in.
-    Called by enrich_paper only when metadata_source ends up as pdf_saved —
-    translator+PDF papers are excluded because their PDF is attached
-    programmatically during upload instead.
-    """
-    src = Path(local_pdf_path)
-    queue_dir = config.PROJECT_ROOT / "pdfs_to_upload"
-    queue_dir.mkdir(parents=True, exist_ok=True)
-    dest = queue_dir / src.name
-    if not dest.exists():
-        shutil.copy2(src, dest)
-
-
 # ── HTTP fetch ────────────────────────────────────────────────────────────────
 
 def _fetch(url: str) -> tuple[Optional[bytes], str]:
@@ -182,7 +115,7 @@ def _fetch(url: str) -> tuple[Optional[bytes], str]:
     installed), so PDF downloads get past the same fingerprint-gated publisher
     CDNs that block the metadata fetch — for open-access files. (Passing the
     bot gate is not passing a paywall: a subscription-only PDF still won't
-    download, which is fine; those go to the Zotero-desktop drag-in path.)
+    download.)
     Reads up to PDF_FETCH_BYTES so a runaway server can't fill memory, and
     retries once on a transient failure. (http_fetch also returns an HTTP
     status, which PDF downloading doesn't need — dropped here.)
@@ -281,77 +214,12 @@ def _write_if_within_limit(target, body: bytes) -> Optional[tuple[str, int]]:
         except OSError:
             pass
         return None
-    _mirror_to_db(target.name, body)
     return (str(target), len(body))
 
 
-# ── Durable copy in the database ──────────────────────────────────────────────
-# The pdfs/ directory is ephemeral on the hosted deploy (wiped every container
-# restart), so files ≤ PDF_BLOB_MAX_BYTES are mirrored into the pdf_blobs table
-# (Turso when hosted) at save time and rehydrated from it on demand. Larger
-# files stay disk-only — the paper carries pdf_too_large and ensure_local_pdf
-# re-downloads them just-in-time instead. `import database` is deferred to call
-# time because database imports this module at load time.
-
-def _mirror_to_db(file_name: str, body: bytes) -> None:
-    """Best-effort durable copy; skipped over the blob cap, never raises."""
-    if len(body) > config.PDF_BLOB_MAX_BYTES:
-        return
-    import database
-    database.save_pdf_blob(file_name, body)
-
-
-def _mirror_file_to_db(target: Path) -> None:
-    """Mirror an already-on-disk file into pdf_blobs (the idempotent early
-    returns in save_pdf/save_slack_file — covers files that predate the blob
-    table or whose original mirror attempt failed). INSERT OR IGNORE upstream
-    makes the repeat call a single cheap no-op round-trip when the blob is
-    already there. Never raises."""
-    try:
-        if target.stat().st_size > config.PDF_BLOB_MAX_BYTES:
-            return
-        body = target.read_bytes()
-    except OSError:
-        return
-    _mirror_to_db(target.name, body)
-
-
 def ensure_local_pdf(paper: dict) -> Optional[str]:
-    """Make a paper's PDF present on the local filesystem, self-healing after a
-    cloud restart wiped pdfs/. Tries, in order:
-        1. the file is already on disk → done;
-        2. rehydrate from the pdf_blobs table (the ≤25 MB durable copy);
-        3. re-download — save_slack_file for Slack uploads, save_pdf for URLs
-           (the pdf_too_large path, or a blob write that never landed).
-    Only for papers that HAVE a local_pdf_path. A paper that never landed a
-    PDF returns None immediately — NO download attempt. (Retrying those at
-    upload time as a "lucky shot" at blocked publishers was tried and removed:
-    every such paper is a near-guaranteed slow timeout, so it made whole
-    upload runs crawl. The "Check again" button on Access issues is the retry
-    path.) Returns the local path, or None if the PDF can't be produced
-    (expired Slack token, or a source that no longer serves the file)."""
+    """The paper's downloaded file, if it is still on disk."""
     path = paper.get("local_pdf_path")
-    if not path:
-        return None
-    target = Path(path)
-    if target.is_file() and target.stat().st_size > 0:
-        return str(target)
-
-    import database
-    body = database.load_pdf_blob(target.name)
-    if body is not None:
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            return None
-        got = _write_if_within_limit(target, body)
-        if got:
-            return got[0]
-
-    slack_url = paper.get("slack_file_url")
-    if slack_url:
-        got = save_slack_file(slack_url, paper.get("url") or "",
-                              paper.get("slack_file_name") or "")
-    else:
-        got = save_pdf(paper.get("url") or "")
-    return got[0] if got else None
+    if path and Path(path).is_file() and Path(path).stat().st_size > 0:
+        return path
+    return None

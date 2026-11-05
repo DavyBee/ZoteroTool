@@ -12,33 +12,19 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
-# ── Data files ────────────────────────────────────────────────────────────────
+# ── Local files ───────────────────────────────────────────────────────────────
+# Nothing here is permanent: Zotero is the record. On Streamlit Cloud these
+# folders are wiped on every restart, which is fine.
 
-# The live database lives alone in the project root so it's unmistakable. Every
-# other piece of app state — the post-enrich baseline + single-step undo
-# snapshots, the ingest registry, and the LLM audit log — lives under state/ so
-# it doesn't clutter the root or get mistaken for the database.
-DB_PATH              = PROJECT_ROOT / "zotero_database.db"
-STATE_DIR            = PROJECT_ROOT / "state"
+# Log of every AI request and response, for checking what the AI step did.
+STATE_DIR      = PROJECT_ROOT / "state"
 STATE_DIR.mkdir(parents=True, exist_ok=True)
-# Kept for backwards compatibility with Database.load()'s two-arg signature; the
-# processed-files bookkeeping now lives in a table inside DB_PATH, not this file.
-PROCESSED_FILES_PATH = STATE_DIR / "processed_files.json"
-LLM_AUDIT_PATH       = STATE_DIR / "llm_audit.jsonl"
+LLM_AUDIT_PATH = STATE_DIR / "llm_audit.jsonl"
 
-# ── PDF storage ───────────────────────────────────────────────────────────────
-
-# Where downloaded PDFs live. Lab members import these into Zotero desktop
-# manually, where the recognizer fills in metadata. See pdf_storage.py.
+# PDFs downloaded during a scan, attached to their Zotero items on upload.
 PDFS_DIR        = PROJECT_ROOT / "pdfs"
-PDF_MAX_BYTES   = 50 * 1024 * 1024     # 50 MB per file — skip larger ones
+PDF_MAX_BYTES   = 50 * 1024 * 1024     # 50 MB per file; larger ones are skipped
 PDF_FETCH_BYTES = 60 * 1024 * 1024     # hard read cap (slightly above max)
-# PDFs at or under this size are mirrored into the database (Turso on the
-# hosted deploy) so they survive the cloud's ephemeral filesystem. Larger PDFs
-# stay disk-only: the paper is marked pdf_too_large and the file is re-
-# downloaded just-in-time when it's actually needed (Zotero attach / zip
-# export) — see pdf_storage.ensure_local_pdf.
-PDF_BLOB_MAX_BYTES = 25 * 1024 * 1024  # 25 MB
 
 # ── Network ───────────────────────────────────────────────────────────────────
 
@@ -186,40 +172,8 @@ def llm_model() -> str:
     return os.environ.get("LLM_MODEL") or LLM_MODEL_DEFAULT
 
 
-def load_persisted_model() -> None:
-    """Load the model picked in-app (or auto-selected by the retirement self-heal)
-    from the DB into os.environ, so a choice survives restarts on the cloud's
-    ephemeral filesystem with no dashboard or maintainer involved. The DB is the
-    source of truth; os.environ is the per-process cache llm_model() reads.
-
-    Only fills in when LLM_MODEL is empty/unset, so a real shell or .env value
-    still wins for local overrides. Never raises (no DB yet on first run)."""
-    if os.environ.get("LLM_MODEL"):
-        return
-    try:
-        import database
-        model = database.get_setting("LLM_MODEL")
-        if model:
-            os.environ["LLM_MODEL"] = model
-    except Exception:
-        pass
-
-
 def set_llm_model(model: str) -> None:
-    """The one place the active Claude model is changed. Persists to the DB (so it
-    survives restarts AND any lab member can change it in-app without dashboard
-    access — the model is config, not a secret) and updates os.environ for
-    immediate effect this process. Used by the Settings picker and by metadata's
-    automatic fallback when a model is retired."""
+    """Switch the Claude model for the rest of this process. Used by the AI
+    step when the configured model has been retired (metadata._auto_heal_model).
+    Not saved: after a restart the switch happens again on the first request."""
     os.environ["LLM_MODEL"] = model
-    try:
-        import database
-        database.set_setting("LLM_MODEL", model)
-    except Exception:
-        pass
-
-
-# Pull the persisted model into os.environ now that .env and Streamlit secrets
-# (incl. the Turso connection) are loaded. After the two loads above, not beside
-# them, because get_setting needs the DB connection details they provide.
-load_persisted_model()

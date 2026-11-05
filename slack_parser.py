@@ -23,7 +23,7 @@ import re
 from typing import Optional, TypedDict
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from database import Comment
+from records import Comment
 
 
 # ── Regexes ───────────────────────────────────────────────────────────────────
@@ -111,6 +111,14 @@ def clean_url(url: str) -> str:
             if not tracking(k)
             and not (host in _TWITTER_HOSTS and k in _TWITTER_PARAMS)]
     return urlunsplit(parts._replace(query=urlencode(kept, doseq=True)))
+
+
+_TWEET_RE = re.compile(r"https?://(?:www\.|mobile\.)?(?:twitter|x)\.com/[^/]+/status/\d+", re.I)
+
+
+def is_tweet_url(url: str) -> bool:
+    """True for a twitter.com / x.com link to an individual post."""
+    return bool(_TWEET_RE.match((url or "").strip()))
 
 
 # ── Types ─────────────────────────────────────────────────────────────────────
@@ -204,21 +212,6 @@ def read_users_json(data: bytes | str) -> dict[str, str]:
             if name:
                 out[u["id"]] = name
     return out
-
-
-def extract_links(messages: list[dict], user_map: dict[str, str]) -> list[ThreadedLink]:
-    """Links from a single list of messages, each with its whole thread as
-    comments. URL deduplication across threads is the database's job."""
-    threads = _group_threads([("", m) for m in messages])
-    return [link for _, link in _links_from_threads(threads, user_map)]
-
-
-def extract_file_attachments(messages: list[dict],
-                             user_map: dict[str, str]) -> list[ThreadedFile]:
-    """Document uploads (the files[] array) from a single list of messages,
-    each with its whole thread as comments."""
-    threads = _group_threads([("", m) for m in messages])
-    return [fa for _, fa in _files_from_threads(threads, user_map)]
 
 
 def extract_doi(text: str) -> Optional[str]:
