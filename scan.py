@@ -24,7 +24,8 @@ from typing import Callable, Optional
 import metadata
 import slack_parser
 from records import new_paper, normalize_url
-from zotero_index import (LibraryIndex, doi_key, title_key, titles_match,
+from zotero_index import (PUBLISHED_TYPES, WORKING_PAPER_TYPES, LibraryIndex,
+                          different_versions, doi_key, title_key, titles_match,
                           year_of)
 
 
@@ -337,8 +338,23 @@ class Job:
                     p["bucket"], p["reason"] = classify(p)
                     p["include"] = False
             self._merge_duplicates()
+            self._label_working_papers()
             self.finished_at = time.time()
             self.phase = SCANNED
+
+    def _label_working_papers(self) -> None:
+        """Add "(working paper)" to a working paper's title when its published
+        version, with the same title, is in this search or already in Zotero."""
+        published = {title_key(p.get("title")) for p in self.papers
+                     if p.get("item_type") in PUBLISHED_TYPES and p.get("title")}
+        for p in self.papers:
+            if p.get("item_type") not in WORKING_PAPER_TYPES or not p.get("title"):
+                continue
+            if p["title"].endswith("(working paper)"):
+                continue
+            t = title_key(p["title"])
+            if t in published or (self.index is not None and self.index.has_published(p["title"])):
+                p["title"] = f"{p['title']} (working paper)"
 
     def _merge_duplicates(self) -> None:
         """Two links in one export can turn out to be the same work once
@@ -478,6 +494,8 @@ def _same_work(p: dict, q: dict, t: str, y: Optional[str]) -> bool:
     different versions, such as a working paper and the published article."""
     words = len(t.split())
     qy = year_of(q.get("year"))
+    if different_versions(p.get("item_type"), q.get("item_type")):
+        return False
     if not p.get("authors") and p.get("item_type") == "webpage" and words >= 3:
         return True
     if y and qy:

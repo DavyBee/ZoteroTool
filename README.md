@@ -12,7 +12,7 @@ This app adds the papers and links shared in the Eviction Lab's literature Slack
    - **Already in Zotero**: these are skipped. The table shows what matched (DOI, URL, or title) and links to the existing item.
 4. Click **Upload to Zotero**. The results stay on the page afterwards, with each item's status. You can select more items and upload again.
 
-Each uploaded item gets its metadata, the PDF when one could be downloaded, and a note with the Slack post and its replies. Tweets and other web pages are saved as web page items with their link. Nothing else is added to the library.
+Each uploaded item gets its metadata, the PDF when one could be downloaded, and a note with the Slack post and its replies. Tweets and other web pages are saved as web page items with their link. When both a working paper and its published version are shared, they are kept as separate items, and the working paper's title ends with "(working paper)". Nothing else is added to the library.
 
 The search runs on the server, so refreshing the page or closing the tab doesn't stop it. Results stay until someone starts a new search or the app restarts, which also happens when its code is updated. If the app restarts before you upload, search the export again; nothing is uploaded twice.
 

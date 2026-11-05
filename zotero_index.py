@@ -103,6 +103,18 @@ def _words_match(a: list[str], b: list[str]) -> bool:
     return missing <= max(len(a), len(b)) // 8
 
 
+# A working paper and its published version share a title but are kept as
+# separate items.
+WORKING_PAPER_TYPES = {"report", "preprint", "workingPaper"}
+PUBLISHED_TYPES = {"journalArticle", "book", "bookSection"}
+
+
+def different_versions(kind_a: Optional[str], kind_b: Optional[str]) -> bool:
+    """True for a working paper and a published work (in either order)."""
+    return ((kind_a in WORKING_PAPER_TYPES and kind_b in PUBLISHED_TYPES)
+            or (kind_a in PUBLISHED_TYPES and kind_b in WORKING_PAPER_TYPES))
+
+
 def titles_match(a: Optional[str], b: Optional[str]) -> bool:
     """Loose comparison for a human-typed title against fetched metadata.
     Tolerates typos, a left-off subtitle, and the odd missing word. Never
@@ -165,6 +177,12 @@ class LibraryIndex:
             self._by_title.setdefault(t, []).append(
                 (year_of(data.get("date")), first_author(names), data.get("itemType"), key))
 
+    def has_published(self, title: Optional[str]) -> bool:
+        """Whether the library has a journal article, book, or chapter with
+        this exact title."""
+        t = title_key(title)
+        return any(kind in PUBLISHED_TYPES for _y, _a, kind, _k in self._by_title.get(t, []))
+
     def item_url(self, key: str) -> str:
         return f"{self.web_base}/items/{key}" if self.web_base else ""
 
@@ -200,6 +218,8 @@ class LibraryIndex:
         words = len(t.split())
         kind = paper.get("item_type")
         for item_year, item_author, item_kind, key in self._by_title[t]:
+            if different_versions(kind, item_kind):
+                continue
             if year and item_year:
                 if year == item_year:
                     return key, "Title"

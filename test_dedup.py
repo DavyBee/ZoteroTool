@@ -442,3 +442,45 @@ def test_journal_articles_a_year_apart_match_but_working_papers_dont():
     assert ix.match({"url": "https://y", "title": "What Works and for Whom in School Capital",
                      "year": "2025", "authors": ["Biasi, B"],
                      "item_type": "journalArticle"}) is None
+
+
+def test_working_paper_and_article_stay_separate_and_the_paper_is_labelled():
+    meta = {
+        "https://nber.org/w1": {"title": "Rent Guarantee Insurance", "year": "2024",
+                                "authors": ["Abramson, B"], "item_type": "report"},
+        "https://journal.org/a": {"title": "Rent Guarantee Insurance", "year": "2024",
+                                  "authors": ["Abramson, B"], "item_type": "journalArticle"},
+        "https://ucla.edu/other": {"title": "An Unrelated Report", "year": "2024",
+                                   "authors": ["Doe, J"], "item_type": "report"},
+    }
+    job = _job([{"url": u, "comments": []} for u in meta],
+               lambda p, *a: {"metadata_source": "translator", **meta[p["url"]]})
+    titles = sorted(p["title"] for p in job.papers)
+    assert titles == ["An Unrelated Report", "Rent Guarantee Insurance",
+                      "Rent Guarantee Insurance (working paper)"]
+
+
+def test_published_version_in_zotero_labels_the_new_working_paper():
+    ix = zi.LibraryIndex()
+    ix.add(item("A", title="Eviction and Poverty in American Cities", date="2024",
+                creators=[{"lastName": "Collinson"}]))                     # journalArticle
+    job = _job([{"url": "https://nber.org/w26139", "comments": []}],
+               lambda p, *a: {"metadata_source": "crossref_doi", "item_type": "report",
+                              "title": "Eviction and Poverty in American Cities",
+                              "year": "2024", "authors": ["Collinson, R"]}, ix)
+    [p] = job.papers
+    assert p["bucket"] == scan.READY                       # not treated as the article
+    assert p["title"] == "Eviction and Poverty in American Cities (working paper)"
+
+
+def test_working_paper_in_zotero_does_not_hide_the_new_article():
+    ix = zi.LibraryIndex()
+    ix.add(item("W", itemType="report", title="Eviction and Poverty in American Cities",
+                date="2024", creators=[{"lastName": "Collinson"}]))
+    job = _job([{"url": "https://qje.org/a", "comments": []}],
+               lambda p, *a: {"metadata_source": "crossref_doi", "item_type": "journalArticle",
+                              "title": "Eviction and Poverty in American Cities",
+                              "year": "2024", "authors": ["Collinson, R"]}, ix)
+    [p] = job.papers
+    assert p["bucket"] == scan.READY
+    assert p["title"] == "Eviction and Poverty in American Cities"
