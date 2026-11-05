@@ -61,7 +61,7 @@ def test_start_page_shows_all_three_steps():
     assert not at.exception
     assert at.title[0].value == "Slack to Zotero"
     assert [h.value for h in at.subheader] == [
-        "1  Slack export", ":gray[2  Scan]", ":gray[3  Upload to Zotero]"]
+        "1. Slack export", ":gray[2. Scan results]", ":gray[3. Upload to Zotero]"]
     assert _buttons(at)["Scan"].disabled             # no export chosen yet
     assert not at.warning                             # Zotero is configured
 

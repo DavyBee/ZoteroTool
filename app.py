@@ -55,7 +55,7 @@ def zotero_ready() -> bool:
 # ── Layout helpers ────────────────────────────────────────────────────────────
 
 def step_header(number: int, title: str, state: str) -> None:
-    text = f"{number}  {title}"
+    text = f"{number}. {title}"
     if state == LATER:
         st.subheader(f":gray[{text}]", anchor=False)
         return
@@ -96,8 +96,8 @@ def step_export(job: scan.Job | None) -> None:
     step_header(1, "Slack export", CURRENT)
     files = st.file_uploader(
         "Slack export", type=["zip", "json"], accept_multiple_files=True,
-        label_visibility="collapsed",
-        help="A .zip export, or a channel's daily .json files.")
+        label_visibility="collapsed")
+    st.caption("A Slack export (.zip), or the channel's daily .json files.")
 
     channels: list[str] = []
     if files:
@@ -234,24 +234,24 @@ def _table(items: list[dict], key: str, review: bool, show_status: bool,
 
 def step_scan(job: scan.Job | None) -> None:
     if job is None:
-        step_header(2, "Scan", LATER)
+        step_header(2, "Scan results", LATER)
         return
     snap = job.snapshot()
     phase = snap["phase"]
 
     if phase == scan.SCANNING:
-        step_header(2, "Scan", CURRENT)
+        step_header(2, "Scan results", CURRENT)
         progress(job, scan.SCANNING)
         return
 
     if phase == scan.FAILED:
-        step_header(2, "Scan", CURRENT)
+        step_header(2, "Scan results", CURRENT)
         st.error(snap["fatal_error"])
         return
 
     ready, review = job.items(scan.READY), job.items(scan.REVIEW)
     existing = job.items(scan.EXISTING)
-    step_header(2, "Scan", DONE_STATE)
+    step_header(2, "Scan results", DONE_STATE)
     took = _minutes((job.finished_at or time.time()) - job.started_at)
     st.caption(f"Scanned {job.n_sources} in {took} · {len(ready)} ready · "
                f"{len(review)} review · {len(existing)} already in Zotero")
