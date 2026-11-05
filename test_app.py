@@ -74,8 +74,11 @@ def test_start_page_shows_all_three_steps():
     assert not at.exception
     assert at.title[0].value == "Slack to Zotero"
     assert [h.value for h in at.subheader] == [
-        "1. Slack export", ":gray[2. Scan results]", ":gray[3. Upload to Zotero]"]
-    assert _buttons(at)["Scan"].disabled             # no export chosen yet
+        "1. Slack export", "2. Results of search", "3. Upload to Zotero"]
+    text = _text(at)
+    assert "Available after the sources search is complete." in text
+    assert "Available after review of search results." in text
+    assert _buttons(at)["Search for sources"].disabled   # no export chosen yet
     assert not at.warning                             # Zotero is configured
 
 
@@ -107,7 +110,7 @@ def test_start_over_asks_before_clearing():
     _buttons(at)["Start over"].click().run()
     _buttons(at)["Clear results"].click().run()
     assert scan.current_job() is None
-    assert "Scan" in _buttons(at)
+    assert "Search for sources" in _buttons(at)
 
 
 def test_results_stay_after_upload_and_more_can_be_uploaded():
@@ -120,7 +123,7 @@ def test_results_stay_after_upload_and_more_can_be_uploaded():
     text = _text(at)
     assert "Done · Uploaded 1" in text
     assert "**Ready (1)**" in text                   # the results are still there
-    assert "New scan" in _buttons(at)
+    assert "New search" in _buttons(at)
     assert "Upload 1 to Zotero" not in _buttons(at)   # nothing left selected
 
     job.set_include("https://a.org/junk", True)       # pick something from Review

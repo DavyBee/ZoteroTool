@@ -151,9 +151,9 @@ def classify(paper: dict) -> tuple[str, str]:
     if paper.get("existing_key"):
         return EXISTING, paper.get("existing_how", "")
     if paper.get("not_scanned"):
-        return REVIEW, "Not scanned"
+        return REVIEW, "Not searched"
     if paper.get("scan_error"):
-        return REVIEW, "Error during scan"
+        return REVIEW, "Error during search"
     if src in ("crossref_doi", "translator", "citation_tags"):
         if paper.get("title"):
             return READY, ""
@@ -245,7 +245,7 @@ class Job:
         self.index: Optional[LibraryIndex] = None
         self.lock = threading.RLock()
         self.phase = SCANNING
-        self.step = "Reading Zotero library" if load_index else "Scanning"
+        self.step = "Reading Zotero library" if load_index else "Searching"
         self.total = len(papers)
         self.done = 0
         self.log: deque[str] = deque(maxlen=1000)
@@ -297,7 +297,7 @@ class Job:
                 return
             with self.lock:
                 self.index = index
-                self.step = "Scanning"
+                self.step = "Searching"
 
         to_scan = []
         with self.lock:

@@ -48,7 +48,7 @@ import zotero_index  # noqa: E402
 
 st.set_page_config(page_title="Slack to Zotero", layout="wide")
 
-DONE_STATE, CURRENT, LATER = "done", "current", "later"
+DONE_STATE, CURRENT = "done", "current"
 
 
 # ── Shared job ────────────────────────────────────────────────────────────────
@@ -81,11 +81,24 @@ def zotero_ready() -> bool:
 
 # ── Layout helpers ────────────────────────────────────────────────────────────
 
+# Steps not reached yet are faded, with a line saying what they wait for.
+_STYLE = """
+<style>
+[class*="st-key-waiting-"] h3 { opacity: 0.4; }
+</style>
+"""
+
+
 def step_header(number: int, title: str, state: str) -> None:
-    """A step's heading; greyed out for a step not reached yet. A finished
-    step's summary line starts with "Done" (see summary())."""
-    text = f"{number}. {title}"
-    st.subheader(f":gray[{text}]" if state == LATER else text, anchor=False)
+    """A step's heading. A finished step's summary line starts with "Done"
+    (see summary()); a step not reached yet uses waiting_step() instead."""
+    st.subheader(f"{number}. {title}", anchor=False)
+
+
+def waiting_step(number: int, title: str, waiting_for: str) -> None:
+    with st.container(key=f"waiting-{number}"):
+        st.subheader(f"{number}. {title}", anchor=False)
+        st.caption(waiting_for)
 
 
 def summary(parts: list[str], done: bool) -> None:
@@ -134,7 +147,8 @@ def step_export(job: scan.Job | None) -> None:
     if not config.anthropic_api_key():
         st.caption("Anthropic key not set. Items that need the AI step will go to Review.")
 
-    if st.button("Scan", type="primary", disabled=not files or not zotero_ready()):
+    if st.button("Search for sources", type="primary",
+                 disabled=not files or not zotero_ready()):
         with tempfile.TemporaryDirectory() as tmp:
             export = scan.read_export([(f.name, f.getvalue()) for f in files], tmp)
             chosen = channel if channel is not None else next(iter(export.channels))
@@ -146,7 +160,7 @@ def step_export(job: scan.Job | None) -> None:
         label = files[0].name if len(files) == 1 else _plural(len(files), "file")
         source = {"label": label}
         if not start_job(papers, source):
-            st.warning("A scan or upload is already running.")
+            st.warning("A search or upload is already running.")
         st.rerun()
 
 
@@ -156,7 +170,7 @@ def start_over_control() -> None:
             st.session_state.confirm_start_over = True
             st.rerun()
         return
-    st.caption("This clears the scan results from the page. Items already uploaded stay in Zotero.")
+    st.caption("This clears the search results from the page. Items already uploaded stay in Zotero.")
     c1, c2, _ = st.columns([1, 1, 6])
     if c1.button("Clear results", type="primary", key="start_over_confirm"):
         clear_job()
@@ -174,7 +188,7 @@ def progress(job: scan.Job, phase: str) -> None:
     if snap["phase"] != phase:
         st.rerun()                       # finished: redraw the whole page
     step = snap["step"]
-    if step in ("Scanning", "Uploading"):
+    if step in ("Searching", "Uploading"):
         total = max(snap["total"], 1)
         st.progress(min(snap["done"] / total, 1.0),
                     text=f"{step} {snap['done']} of {snap['total']}")
@@ -254,29 +268,29 @@ def _table(items: list[dict], key: str, review: bool, show_status: bool,
 
 def step_scan(job: scan.Job | None) -> None:
     if job is None:
-        step_header(2, "Scan results", LATER)
+        waiting_step(2, "Results of search", "Available after the sources search is complete.")
         return
     snap = job.snapshot()
     phase = snap["phase"]
 
     if phase == scan.SCANNING:
-        step_header(2, "Scan results", CURRENT)
+        step_header(2, "Results of search", CURRENT)
         progress(job, scan.SCANNING)
         return
 
     if phase == scan.FAILED:
-        step_header(2, "Scan results", CURRENT)
+        step_header(2, "Results of search", CURRENT)
         st.error(snap["fatal_error"])
         return
 
     ready, review = job.items(scan.READY), job.items(scan.REVIEW)
     existing = job.items(scan.EXISTING)
-    step_header(2, "Scan results", DONE_STATE)
+    step_header(2, "Results of search", DONE_STATE)
     took = _minutes((job.finished_at or time.time()) - job.started_at)
-    summary([f"Scanned {job.n_sources} in {took}", f"{len(ready)} ready",
+    summary([f"Searched {job.n_sources} in {took}", f"{len(ready)} ready",
              f"{len(review)} review", f"{len(existing)} already in Zotero"], done=True)
     if snap["fatal_error"]:
-        st.error("The scan stopped because of an error. Items it didn't reach are in Review.")
+        st.error("The search stopped because of an error. Items it didn't reach are in Review.")
         with st.expander("Details"):
             st.code(snap["fatal_error"], language=None)
 
@@ -315,7 +329,7 @@ def step_scan(job: scan.Job | None) -> None:
 def step_upload(job: scan.Job | None) -> None:
     title = "Upload to Zotero"
     if job is None or job.snapshot()["phase"] in (scan.SCANNING, scan.FAILED):
-        step_header(3, title, LATER)
+        waiting_step(3, title, "Available after review of search results.")
         return
     snap = job.snapshot()
     phase = snap["phase"]
@@ -340,7 +354,7 @@ def step_upload(job: scan.Job | None) -> None:
             parts.append(f"{len(failed)} failed")
         skipped = snap["skipped_existing"]
         if skipped:
-            parts.append(f"{skipped} skipped because they were added to Zotero after the scan")
+            parts.append(f"{skipped} skipped because they were added to Zotero after the search")
         summary(parts, done=finished)
         if failed:
             st.dataframe([{"Title": p.get("title") or p["url"], "Error": p["upload_error"]}
@@ -364,8 +378,8 @@ def step_upload(job: scan.Job | None) -> None:
         st.caption("Nothing selected to upload.")
 
     if has_uploaded:
-        if st.button("New scan", type="tertiary" if n_selected else "primary",
-                     key="new_scan"):
+        if st.button("New search", type="tertiary" if n_selected else "primary",
+                     key="new_search"):
             clear_job()
             st.rerun()
 
@@ -385,6 +399,7 @@ def render_settings() -> None:
 # ── Page ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    st.markdown(_STYLE, unsafe_allow_html=True)
     st.title("Slack to Zotero", anchor=False)
     if not zotero_ready():
         st.warning("Zotero is not configured.")

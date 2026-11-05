@@ -109,7 +109,7 @@ def test_collect_uses_users_json_for_workflow_submitters(tmp_path):
     ({"metadata_source": "needs_manual"}, "review", "Page could not be accessed"),
     ({"metadata_source": "pdf_saved"}, "review", "PDF has no readable text"),
     ({"metadata_source": "none"}, "review", "No metadata found"),
-    ({"metadata_source": "none", "scan_error": "boom"}, "review", "Error during scan"),
+    ({"metadata_source": "none", "scan_error": "boom"}, "review", "Error during search"),
 ])
 def test_classify(fields, bucket, reason):
     assert scan.classify({"url": "https://a.org", **fields}) == (bucket, reason)
@@ -144,7 +144,7 @@ def test_job_scans_every_paper_and_sorts_results():
     ready, review = job.items(scan.READY), job.items(scan.REVIEW)
     assert [p["title"] for p in ready] == ["Paper 0", "Paper 4"]
     assert len(review) == 4
-    assert {p["reason"] for p in review} == {"Error during scan", "Likely not a source"}
+    assert {p["reason"] for p in review} == {"Error during search", "Likely not a source"}
     assert all(p["include"] for p in ready)
     assert not any(p["include"] for p in review)
     assert job.snapshot()["done"] == 6
@@ -163,7 +163,7 @@ def test_job_stop_leaves_remaining_items_unscanned():
     job.stop()
     gate.append(1)
     _wait(job, scan.SCANNED)
-    not_scanned = [p for p in job.items(scan.REVIEW) if p["reason"] == "Not scanned"]
+    not_scanned = [p for p in job.items(scan.REVIEW) if p["reason"] == "Not searched"]
     assert len(not_scanned) >= 40 - scan.WORKERS
     assert job.snapshot()["done"] == 40
 

@@ -5,7 +5,7 @@ This app adds the papers and links shared in the Eviction Lab's literature Slack
 ## Using the app
 
 1. Upload the channel's Slack export: the .zip file, or the channel's daily .json files.
-2. Click **Scan**. The app reads every link and uploaded document and looks up its title, authors, year, and journal. A few months of messages take a minute or two.
+2. Click **Search for sources**. The app reads every link and uploaded document and looks up its title, authors, year, and journal. A few months of messages take a minute or two.
 3. Check the results, which are sorted into three groups:
    - **Ready**: metadata was found. These are selected for upload. Clear the box on any you want to leave out.
    - **Review**: the app couldn't identify these, or they probably aren't sources. Each row gives the reason. Nothing here is uploaded unless you select it.
@@ -14,7 +14,7 @@ This app adds the papers and links shared in the Eviction Lab's literature Slack
 
 Each uploaded item gets its metadata, the PDF when one could be downloaded, and a note with the Slack post and its replies. Tweets and other web pages are saved as web page items with their link. Nothing else is added to the library.
 
-The scan runs on the server, so refreshing the page or closing the tab doesn't stop it. Results stay until someone starts a new scan or the app restarts, which also happens when its code is updated. If the app restarts before you upload, scan the export again; nothing is uploaded twice.
+The search runs on the server, so refreshing the page or closing the tab doesn't stop it. Results stay until someone starts a new search or the app restarts, which also happens when its code is updated. If the app restarts before you upload, search the export again; nothing is uploaded twice.
 
 ## Review reasons
 
@@ -26,7 +26,7 @@ The scan runs on the server, so refreshing the page or closing the tab doesn't s
 | Slack file could not be downloaded | The file's download link in the export has expired. |
 | PDF has no readable text | A PDF was found but its text couldn't be read. |
 | No metadata found | No lookup recognized the link. |
-| Not scanned, Error during scan | The scan was stopped or hit an error before reaching this item. Scanning again usually fixes it. |
+| Not searched, Error during search | The search was stopped or hit an error before reaching this item. Searching again usually fixes it. |
 
 ## Hosting
 
