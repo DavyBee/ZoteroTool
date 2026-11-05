@@ -189,21 +189,44 @@ def progress(job: scan.Job, phase: str) -> None:
     snap = job.snapshot()
     if snap["phase"] != phase:
         st.rerun()                       # finished: redraw the whole page
-    step = snap["step"]
-    if step in ("Searching", "Uploading"):
+    step = "Paused" if snap["paused"] else snap["step"]
+    if snap["step"] in ("Searching", "Uploading"):
         total = max(snap["total"], 1)
         st.progress(min(snap["done"] / total, 1.0),
                     text=f"{step} {snap['done']} of {snap['total']}")
     else:
         st.progress(0, text=step)
     if phase == scan.SCANNING:
-        if snap["stopping"]:
-            st.caption("Stopping after the current items.")
-        elif st.button("Stop"):
-            job.stop()
+        search_controls(job, snap)
     if snap["log"]:
         with st.expander("Log"):
             st.code("\n".join(reversed(snap["log"][-300:])), language=None)
+
+
+def search_controls(job: scan.Job, snap: dict) -> None:
+    """Pause or Resume keeps the results so far; Stop clears everything."""
+    if st.session_state.get("confirm_stop"):
+        st.caption("This stops the search and clears its results.")
+        row = st.container(horizontal=True)
+        if row.button("Stop and clear", type="primary", key="stop_confirm"):
+            st.session_state.pop("confirm_stop", None)
+            scan.discard_job()
+            st.rerun(scope="app")
+        if row.button("Cancel", type="tertiary", key="stop_cancel"):
+            st.session_state.pop("confirm_stop", None)
+            st.rerun()
+        return
+    row = st.container(horizontal=True)
+    if snap["paused"]:
+        if row.button("Resume", type="primary", key="resume"):
+            job.resume()
+            st.rerun()
+    elif row.button("Pause", key="pause"):
+        job.pause()
+        st.rerun()
+    if row.button("Stop", key="stop"):
+        st.session_state.confirm_stop = True
+        st.rerun()
 
 
 # ── Step 2: Scan and review ───────────────────────────────────────────────────

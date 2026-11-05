@@ -252,6 +252,8 @@ class Job:
         self.done = 0
         self.log: deque[str] = deque(maxlen=1000)
         self.stop_requested = False
+        self._running = threading.Event()        # cleared while paused
+        self._running.set()
         self.started_at = time.time()
         self.upload_result: Optional[dict] = None
         self.fatal_error: Optional[str] = None
@@ -267,6 +269,15 @@ class Job:
     def stop(self) -> None:
         with self.lock:
             self.stop_requested = True
+        self._running.set()                      # let paused workers finish
+
+    def pause(self) -> None:
+        """Hold the search after the items in progress; resume() continues it."""
+        if not self.stop_requested:
+            self._running.clear()
+
+    def resume(self) -> None:
+        self._running.set()
 
     def _mark_existing(self, paper: dict, hit: tuple[str, str]) -> None:
         paper["existing_key"], paper["existing_how"] = hit
@@ -277,6 +288,7 @@ class Job:
         paper["include"] = False
 
     def _enrich_one(self, paper: dict) -> dict:
+        self._running.wait()
         if self.stop_requested:
             return {"metadata_source": "none", "not_scanned": True}
         try:
@@ -521,7 +533,8 @@ class Job:
                     "log": list(self.log), "fatal_error": self.fatal_error,
                     "upload_result": self.upload_result,
                     "skipped_existing": self.skipped_existing,
-                    "stopping": self.stop_requested and self.phase == SCANNING}
+                    "stopping": self.stop_requested and self.phase == SCANNING,
+                    "paused": not self._running.is_set() and self.phase == SCANNING}
 
 
 def _same_work(p: dict, q: dict, t: str, y: Optional[str]) -> bool:
@@ -603,6 +616,16 @@ def start_job(papers: list[dict], anthropic_key: Optional[str],
         _current = Job(papers, anthropic_key, audit_log_path, **kwargs)
         _current.start()
         return True
+
+
+def discard_job() -> None:
+    """Stop a running search and drop it and its results. Its threads finish
+    the items in progress in the background and are then gone."""
+    global _current
+    with _current_lock:
+        if _current is not None and _current.snapshot()["phase"] == SCANNING:
+            _current.stop()
+            _current = None
 
 
 def clear_job() -> None:

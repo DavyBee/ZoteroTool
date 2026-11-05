@@ -380,3 +380,28 @@ def test_unchecked_ready_items_wait_in_review_after_an_upload():
     _wait(job, scan.DONE)
     left = next(p for p in job.papers if p["url"] == "https://a.org/1")
     assert (left["bucket"], left["reason"]) == (scan.REVIEW, "Left out of upload")
+
+
+def test_pause_holds_the_search_and_resume_finishes_it():
+    job = scan.Job(_papers(3), None, title_search=lambda *a: None,
+                   enrich=lambda p, *a: {"metadata_source": "translator", "title": p["url"]})
+    job.pause()
+    job.start()
+    time.sleep(0.1)
+    snap = job.snapshot()
+    assert snap["paused"] and snap["done"] == 0 and snap["phase"] == scan.SCANNING
+    job.resume()
+    _wait(job, scan.SCANNED)
+    assert all(p["bucket"] == scan.READY for p in job.papers)
+
+
+def test_stop_discards_the_search():
+    job = scan.Job(_papers(3), None, title_search=lambda *a: None,
+                   enrich=lambda p, *a: {"metadata_source": "translator", "title": p["url"]})
+    job.pause()
+    scan._current = job
+    job.start()
+    scan.discard_job()
+    assert scan.current_job() is None
+    _wait(job, scan.SCANNED)                      # its threads finish and exit
+    assert job.snapshot()["done"] == 3
