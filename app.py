@@ -355,12 +355,11 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
         comments = p.get("comments") or []
         if comments:
             first = comments[0]
-            text = first.get("text") or ""
-            replies = len(comments) - 1
-            more = f" ({replies} {'reply' if replies == 1 else 'replies'})" if replies else ""
-            _field("Original Slack message",
-                   f"{first.get('author') or ''}: "
-                   f"{text[:400] + ('...' if len(text) > 400 else '')}{more}")
+            text = (first.get("text") or "").strip()
+            author = _md(first.get("author") or "")
+            body = (_md(text[:400] + ("..." if len(text) > 400 else "")) if text
+                    else ":gray[only the link, no text]")
+            st.markdown(f"**Original Slack message:** {author}: {body}")
 
         frozen = locked or bool(p.get("zotero_key"))
         if st.session_state.get("editing_url") == p["url"] and not frozen:

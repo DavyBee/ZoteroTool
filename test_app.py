@@ -257,3 +257,13 @@ def test_upload_goes_straight_through_when_nothing_is_left_out(monkeypatch):
     at = _page()
     _buttons(at)["Upload 1 to Zotero"].click().run()
     assert started == [True]
+
+
+def test_card_shows_only_the_original_slack_message():
+    job = _scanned_job()
+    junk = _junk(job)
+    junk["comments"] = [{"author": "Lorae", "ts": "1", "text": "", "is_reply": False},
+                        {"author": "Ben", "ts": "2", "text": "agreed", "is_reply": True}]
+    text = _text(_page())
+    assert "**Original Slack message:** Lorae: :gray[only the link, no text]" in text
+    assert "agreed" not in text and "replies" not in text
