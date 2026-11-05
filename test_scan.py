@@ -209,3 +209,35 @@ def test_upload_sends_only_selected_items_and_retries_failures():
     _wait(job, scan.DONE)
     assert [i["title"] for i in zot.created][-1] == "Paper 2"
     assert len(zot.created) == 3
+
+
+def test_authorless_web_page_goes_to_review():
+    p = {"url": "https://docs.google.com/document/d/x", "metadata_source": "translator",
+         "title": "Lab Bibliography", "item_type": "webpage"}
+    assert scan.classify(p) == ("review", "Web page, not a paper")
+    p["authors"] = ["Doe, Jane"]
+    assert scan.classify(p) == ("ready", "")
+
+
+def test_landing_page_merges_with_article_but_editions_stay_apart():
+    papers = [
+        {"url": "https://t.com/collections/x", "comments": []},
+        {"url": "https://t.com/doi/10.1234/x", "comments": []},
+        {"url": "https://jchs.org/2023", "comments": []},
+        {"url": "https://jchs.org/2024", "comments": []},
+    ]
+    meta = {
+        "https://t.com/collections/x": {"title": "Where Is the Housing Shortage?",
+                                        "item_type": "webpage"},
+        "https://t.com/doi/10.1234/x": {"title": "Where Is the Housing Shortage?",
+                                        "year": "2025", "doi": "10.1234/x"},
+        "https://jchs.org/2023": {"title": "The State of the Nation's Housing", "year": "2023"},
+        "https://jchs.org/2024": {"title": "The State of the Nation's Housing", "year": "2024"},
+    }
+    job = scan.Job(papers, None, title_search=lambda *a: None,
+                   enrich=lambda p, *a: {"metadata_source": "translator", **meta[p["url"]]})
+    job.start()
+    _wait(job, scan.SCANNED)
+    urls = sorted(p["url"] for p in job.papers)
+    assert urls == ["https://jchs.org/2023", "https://jchs.org/2024",
+                    "https://t.com/doi/10.1234/x"]

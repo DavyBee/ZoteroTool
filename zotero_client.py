@@ -20,7 +20,7 @@ import mimetypes
 import os
 import re
 import time
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 from typing import Callable, Optional
@@ -206,7 +206,8 @@ def upload_papers(
                 local_pdf = pdf_storage.ensure_local_pdf(paper)
                 if local_pdf:
                     try:
-                        attach_file(zot, zotero_key, local_pdf, _file_name(paper, local_pdf))
+                        attach_file_with_retry(zot, zotero_key, local_pdf,
+                                               _file_name(paper, local_pdf))
                         n_pdf += 1
                     except Exception as exc:
                         errors.append((paper["url"], f"pdf_attach failed: {exc}"))
@@ -299,8 +300,11 @@ def attach_file(zot, parent_key: str, path: str, filename: str) -> None:
         "contentType": ctype, "filename": filename, "tags": [], "relations": {},
     }])
     if not resp.get("successful"):
-        msg = next(iter(resp.get("failed", {}).values()), {}).get("message", "unknown error")
-        raise RuntimeError(f"attachment item rejected: {msg}")
+        fail = next(iter(resp.get("failed", {}).values()), {})
+        msg = fail.get("message", "unknown error")
+        code = fail.get("code") or 500
+        err = TransientError if code >= 500 or code == 429 else RuntimeError
+        raise err(f"attachment item rejected: {msg}")
     key = resp["successful"]["0"]["data"]["key"]
     base = f"{zot.endpoint}/{zot.library_type}/{zot.library_id}/items/{key}/file"
     headers = {"Zotero-API-Key": zot.api_key, "Zotero-API-Version": "3",
@@ -325,6 +329,24 @@ def attach_file(zot, parent_key: str, path: str, filename: str) -> None:
         raise
 
 
+class TransientError(RuntimeError):
+    """A Zotero failure worth retrying: 429, 5xx, or a network error."""
+
+
+ATTACH_ATTEMPTS = 3
+ATTACH_RETRY_WAIT = 3.0     # seconds; multiplied by the attempt number
+
+
+def attach_file_with_retry(zot, parent_key: str, path: str, filename: str) -> None:
+    for attempt in range(ATTACH_ATTEMPTS):
+        try:
+            return attach_file(zot, parent_key, path, filename)
+        except TransientError:
+            if attempt == ATTACH_ATTEMPTS - 1:
+                raise
+            time.sleep(ATTACH_RETRY_WAIT * (attempt + 1))
+
+
 def _http(method: str, url: str, data: bytes, headers: dict) -> bytes:
     req = Request(url, data=data, headers=headers, method=method)
     try:
@@ -332,7 +354,10 @@ def _http(method: str, url: str, data: bytes, headers: dict) -> bytes:
             return r.read()
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:200]
-        raise RuntimeError(f"HTTP {exc.code}: {detail}") from None
+        err = TransientError if exc.code >= 500 or exc.code == 429 else RuntimeError
+        raise err(f"HTTP {exc.code}: {detail}") from None
+    except (URLError, TimeoutError) as exc:
+        raise TransientError(f"network error: {exc}") from None
 
 
 # ── Item mapping ──────────────────────────────────────────────────────────────

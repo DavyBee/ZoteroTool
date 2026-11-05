@@ -72,11 +72,32 @@ _TWITTER_HOSTS = {"twitter.com", "www.twitter.com", "x.com", "www.x.com",
                   "mobile.twitter.com"}
 
 
+# University library proxies: "doi-org.ezproxy.princeton.edu/10.1/x" is
+# "doi.org/10.1/x" (EZproxy writes the real host's dots as "-" and its
+# hyphens as "--"), and ".../login?url=<real url>" wraps the real link.
+_EZPROXY_HOST_RE = re.compile(r"^([a-z0-9-]+)\.ezproxy\.[a-z0-9.-]+$", re.I)
+
+
+def _unproxy(url: str) -> str:
+    parts = urlsplit(url)
+    host = parts.netloc.lower()
+    if ".ezproxy." in host or host.startswith("ezproxy."):
+        target = dict(parse_qsl(parts.query)).get("url") or dict(parse_qsl(parts.query)).get("qurl")
+        if target and target.startswith("http"):
+            return target
+    m = _EZPROXY_HOST_RE.match(host)
+    if m:
+        real = m.group(1).replace("--", "\0").replace("-", ".").replace("\0", "-")
+        return urlunsplit(parts._replace(scheme="https", netloc=real))
+    return url
+
+
 def clean_url(url: str) -> str:
-    """Decode HTML entities Slack leaves in URLs (`&amp;`) and drop tracking
-    parameters. Every other parameter is kept, in order: some sites identify
-    the paper in the query string (e.g. SSRN's abstract_id)."""
-    url = html.unescape(url.strip())
+    """Decode HTML entities Slack leaves in URLs (`&amp;`), undo university
+    proxy links, and drop tracking parameters. Every other parameter is kept,
+    in order: some sites identify the paper in the query string (e.g. SSRN's
+    abstract_id)."""
+    url = _unproxy(html.unescape(url.strip()))
     parts = urlsplit(url)
     if not parts.query:
         return url

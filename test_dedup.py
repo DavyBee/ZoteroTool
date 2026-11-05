@@ -297,7 +297,7 @@ def test_attachment_failure_is_reported_not_silent(monkeypatch, tmp_path):
     class Zot:
         def create_items(self, items):
             if items[0]["itemType"] == "attachment":
-                return {"successful": {}, "failed": {"0": {"message": "nope"}}}
+                return {"successful": {}, "failed": {"0": {"code": 400, "message": "nope"}}}
             return {"successful": {"0": {"data": {"key": "P1"}}}, "failed": {}}
 
     paper = {"url": "https://a.org", "title": "T", "local_pdf_path": str(pdf)}
@@ -337,3 +337,58 @@ def test_crossref_title_search_needs_author_or_a_specific_title(monkeypatch):
     assert metadata.search_crossref_title("Evictions") is None          # too generic
     assert metadata.search_crossref_title("Evictions", "Jones") is None  # wrong author
     assert metadata.search_crossref_title("Evictions", "Smtih") is not None  # author typo ok
+
+
+def test_temporary_attachment_failure_is_retried(monkeypatch, tmp_path):
+    pdf = tmp_path / "a.pdf"
+    pdf.write_bytes(b"%PDF-1.4 test")
+    monkeypatch.setattr(zotero_client, "ATTACH_RETRY_WAIT", 0)
+    calls = []
+
+    def flaky(zot, key, path, name):
+        calls.append(1)
+        if len(calls) == 1:
+            raise zotero_client.TransientError("attachment item rejected: An error occurred")
+
+    monkeypatch.setattr(zotero_client, "attach_file", flaky)
+    zotero_client.attach_file_with_retry(None, "K", str(pdf), "a.pdf")
+    assert len(calls) == 2
+
+
+def test_permanent_attachment_failure_is_not_retried(monkeypatch):
+    monkeypatch.setattr(zotero_client, "ATTACH_RETRY_WAIT", 0)
+    calls = []
+
+    def bad(*a):
+        calls.append(1)
+        raise RuntimeError("HTTP 400: bad filename")
+
+    monkeypatch.setattr(zotero_client, "attach_file", bad)
+    with pytest.raises(RuntimeError):
+        zotero_client.attach_file_with_retry(None, "K", "x.pdf", "x.pdf")
+    assert len(calls) == 1
+
+
+def test_citoid_retries_rate_limits_but_not_not_found(monkeypatch):
+    import io
+    from urllib.error import HTTPError
+    import metadata
+    monkeypatch.setattr(metadata, "CITOID_RETRY_WAIT", 0)
+    monkeypatch.setattr(metadata.config, "CITOID_MIN_INTERVAL", 0)
+    codes = []
+
+    def fake_urlopen(req, timeout=None):
+        code = responses.pop(0)
+        codes.append(code)
+        if code != 200:
+            raise HTTPError(req.full_url, code, "x", {}, io.BytesIO(b""))
+        return io.BytesIO(b'[{"title": "T"}]')
+
+    monkeypatch.setattr(metadata, "urlopen", fake_urlopen)
+    responses = [429, 503, 200]
+    assert metadata._citoid_get("https://a.org/1") == {"title": "T"}
+    assert codes == [429, 503, 200]
+    codes.clear()
+    responses = [404, 200]
+    assert metadata._citoid_get("https://a.org/2") is None
+    assert codes == [404]

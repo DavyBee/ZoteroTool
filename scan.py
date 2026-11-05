@@ -155,6 +155,9 @@ def classify(paper: dict) -> tuple[str, str]:
     if src in ("crossref_doi", "translator", "llm") and paper.get("title") \
             and paper.get("hint_mismatch"):
         return REVIEW, "Title differs from Slack post"
+    if src in ("crossref_doi", "translator", "llm") and paper.get("title") \
+            and paper.get("item_type") == "webpage" and not paper.get("authors"):
+        return REVIEW, "Web page, not a paper"
     if src in ("crossref_doi", "translator"):
         if paper.get("title"):
             return READY, ""
@@ -337,18 +340,27 @@ class Job:
         enriched (a doi.org link and the publisher's page). Keep one, preferring
         Ready, and give it the other's Slack comments and PDF."""
         rank = {EXISTING: 0, READY: 1, REVIEW: 2}
-        seen: dict[tuple, dict] = {}
+        by_doi: dict[str, dict] = {}
+        by_title: dict[str, list[dict]] = {}
         keep: list[dict] = []
-        for p in sorted(self.papers, key=lambda p: rank.get(p.get("bucket"), 3)):
-            keys = [("doi", doi_key(p.get("doi")))]
+        order = sorted(self.papers, key=lambda p: (
+            rank.get(p.get("bucket"), 3), not p.get("doi"), not p.get("year")))
+        for p in order:
+            d = doi_key(p.get("doi"))
             t, y = title_key(p.get("title")), year_of(p.get("year"))
-            if t and y:
-                keys.append(("title", t, y))
-            keys = [k for k in keys if k[-1]]
-            target = next((seen[k] for k in keys if k in seen), None)
+            target = by_doi.get(d) if d else None
+            if target is None and t and len(t.split()) >= 4:
+                # Same title, and the years agree or one is unknown (a landing
+                # page and the article it describes). Different known years
+                # are different editions and are kept apart.
+                target = next((q for q in by_title.get(t, [])
+                               if not y or not year_of(q.get("year"))
+                               or year_of(q.get("year")) == y), None)
             if target is None:
-                for k in keys:
-                    seen[k] = p
+                if d:
+                    by_doi[d] = p
+                if t:
+                    by_title.setdefault(t, []).append(p)
                 keep.append(p)
                 continue
             ts = {c["ts"] for c in target.get("comments", [])}

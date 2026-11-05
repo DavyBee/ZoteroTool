@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import quote as url_quote
 from urllib.request import Request, urlopen
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 import config
 import http_fetch
@@ -112,6 +112,8 @@ _last_citoid_call = 0.0
 # Scans enrich several papers at once; the lock makes the throttle hold across
 # threads by reserving each request's start time in turn.
 _citoid_lock = threading.Lock()
+CITOID_ATTEMPTS = 3
+CITOID_RETRY_WAIT = 3.0      # seconds; multiplied by the attempt number
 
 
 def _citoid_get(url: str) -> Optional[dict]:
@@ -127,25 +129,34 @@ def _citoid_get(url: str) -> Optional[dict]:
     if url in _CITOID_CACHE:
         return _CITOID_CACHE[url]
 
-    with _citoid_lock:
-        wait = config.CITOID_MIN_INTERVAL - (time.monotonic() - _last_citoid_call)
-        if wait > 0:
-            time.sleep(wait)
-        _last_citoid_call = time.monotonic()
-
     api = config.CITOID_BASE + url_quote(url, safe="")
-    req = Request(api, headers={
-        "User-Agent": config.CITOID_USER_AGENT,
-        "Accept": "application/json",
-    })
     item: Optional[dict] = None
-    try:
-        with urlopen(req, timeout=config.HTTP_TIMEOUT) as resp:
-            data = json.loads(resp.read())
-        if isinstance(data, list) and data:
-            item = data[0]
-    except Exception:
-        item = None
+    # Citoid is free and has no SLA: under load it answers 429/5xx or times
+    # out. Those are retried with backoff; a 404 ("no metadata") is final.
+    for attempt in range(CITOID_ATTEMPTS):
+        with _citoid_lock:
+            wait = config.CITOID_MIN_INTERVAL - (time.monotonic() - _last_citoid_call)
+            if wait > 0:
+                time.sleep(wait)
+            _last_citoid_call = time.monotonic()
+        req = Request(api, headers={
+            "User-Agent": config.CITOID_USER_AGENT,
+            "Accept": "application/json",
+        })
+        try:
+            with urlopen(req, timeout=config.HTTP_TIMEOUT) as resp:
+                data = json.loads(resp.read())
+            if isinstance(data, list) and data:
+                item = data[0]
+            break
+        except HTTPError as exc:
+            if exc.code != 429 and exc.code < 500:
+                break
+        except (URLError, TimeoutError, OSError):
+            pass
+        except Exception:
+            break
+        time.sleep(CITOID_RETRY_WAIT * (attempt + 1))
 
     _CITOID_CACHE[url] = item
     return item

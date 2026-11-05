@@ -190,3 +190,16 @@ def test_real_export():
                 and m.get("ts") != parent.get("ts")
                 and slack_parser.URL_RE.search(parent.get("text") or "")):
             assert m["ts"] in attached, (m["ts"], m.get("text", "")[:60])
+
+
+@pytest.mark.parametrize("raw, expected", [
+    ("https://doi-org.ezproxy.princeton.edu/10.1080/07352166.2019.1662728",
+     "https://doi.org/10.1080/07352166.2019.1662728"),
+    ("https://www-jstor-org.ezproxy.princeton.edu/stable/123",
+     "https://www.jstor.org/stable/123"),
+    ("https://cody--cook-com.ezproxy.princeton.edu/p.pdf", "https://cody-cook.com/p.pdf"),
+    ("https://login.ezproxy.princeton.edu/login?url=https://example.org/a",
+     "https://example.org/a"),
+])
+def test_clean_url_undoes_library_proxies(raw, expected):
+    assert clean_url(raw) == expected
