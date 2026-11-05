@@ -11,6 +11,7 @@ No Streamlit imports here, so the whole flow is testable without the UI.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import threading
@@ -621,6 +622,43 @@ def start_job(papers: list[dict], anthropic_key: Optional[str],
         _current = Job(papers, anthropic_key, audit_log_path, **kwargs)
         _current.start()
         return True
+
+
+# ── Saved results (for testing) ───────────────────────────────────────────────
+# A finished search can be saved to a file and uploaded in step 1 instead of
+# an export: the page then shows those results without searching again.
+
+SAVED_MARK = "slack_to_zotero_saved_results"
+# Set during a scan or upload, or tied to this computer; worked out again on load.
+_NOT_SAVED = ("bucket", "reason", "include", "decision", "was_edited", "zotero_key",
+              "upload_error", "existing_key", "existing_how", "existing_url",
+              "existing_title", "local_pdf_path", "pdf_size_bytes", "not_scanned",
+              "scan_error")
+
+
+def saved_results(papers: list[dict], label: str) -> bytes:
+    kept = [{k: v for k, v in p.items() if k not in _NOT_SAVED} for p in papers]
+    return json.dumps({SAVED_MARK: 1, "label": label, "papers": kept},
+                      ensure_ascii=False, indent=1).encode()
+
+
+def read_saved_results(data: bytes) -> Optional[tuple[list[dict], str]]:
+    """(papers, label) if `data` is a saved-results file, else None."""
+    try:
+        saved = json.loads(data)
+    except ValueError:
+        return None
+    if not isinstance(saved, dict) or SAVED_MARK not in saved:
+        return None
+    return saved["papers"], saved.get("label") or "Saved results"
+
+
+def load_saved_job(papers: list[dict], label: str, **kwargs) -> bool:
+    """Show saved results as a finished search. Each item is checked against
+    Zotero again and sorted again, but nothing is looked up."""
+    return start_job(papers, None, enrich=lambda *a: {},
+                     title_search=lambda *a, **k: None,
+                     source={"label": label}, **kwargs)
 
 
 def discard_job() -> None:

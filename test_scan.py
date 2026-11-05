@@ -405,3 +405,23 @@ def test_stop_discards_the_search():
     assert scan.current_job() is None
     _wait(job, scan.SCANNED)                      # its threads finish and exit
     assert job.snapshot()["done"] == 3
+
+
+def test_saved_results_load_as_a_finished_search_without_lookups():
+    job = scan.Job(_papers(3), None, title_search=lambda *a: None,
+                   enrich=lambda p, *a: {"metadata_source": "translator", "title": f"Paper {p['url'][-1]}",
+                                         "authors": ["Doe, Jane"], "year": "2024",
+                                         "item_type": "journalArticle", "doi": f"10.1/{p['url'][-1]}"})
+    job.start()
+    _wait(job, scan.SCANNED)
+    job.papers[0]["zotero_key"] = "ABC"              # upload outcomes aren't saved
+    data = scan.saved_results(job.papers, "full.json")
+    papers, label = scan.read_saved_results(data)
+    assert label == "full.json" and "zotero_key" not in papers[0]
+    assert scan.read_saved_results(b'[{"type": "message"}]') is None   # a Slack day-file
+    scan._current = None
+    assert scan.load_saved_job(papers, label)
+    loaded = scan.current_job()
+    _wait(loaded, scan.SCANNED)
+    assert [p["bucket"] for p in loaded.papers] == [scan.READY] * 3
+    scan._current = None

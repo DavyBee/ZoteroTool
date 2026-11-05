@@ -134,6 +134,15 @@ def step_export(job: scan.Job | None) -> None:
         label_visibility="collapsed")
     st.caption("A Slack export (.zip), or the channel's daily .json files.")
 
+    saved = scan.read_saved_results(files[0].getvalue()) if len(files or []) == 1 else None
+    if saved is not None:
+        if st.button("Search for sources", type="primary", disabled=not zotero_ready()):
+            if not scan.load_saved_job(*saved, load_index=_load_index,
+                                       refresh_index=_refresh_index):
+                st.warning("A search or upload is already running.")
+            st.rerun()
+        return
+
     channels: list[str] = []
     if files:
         try:
