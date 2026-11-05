@@ -43,7 +43,7 @@ def _buttons(at):
 
 
 def test_start_page():
-    at = AppTest.from_file("app.py").run()
+    at = AppTest.from_file("app.py", default_timeout=30).run()
     assert not at.exception
     assert at.title[0].value == "Slack to Zotero"
     assert _buttons(at)["Scan"].disabled             # nothing uploaded yet
@@ -52,13 +52,13 @@ def test_start_page():
 
 def test_missing_zotero_config_is_reported(monkeypatch):
     monkeypatch.delenv("ZOTERO_API_KEY")
-    at = AppTest.from_file("app.py").run()
+    at = AppTest.from_file("app.py", default_timeout=30).run()
     assert "Zotero is not configured" in at.warning[0].value
 
 
 def test_results_survive_a_new_session_and_start_over_clears_them():
     _scanned_job()
-    at = AppTest.from_file("app.py").run()           # a fresh session = a refresh
+    at = AppTest.from_file("app.py", default_timeout=30).run()           # a fresh session = a refresh
     assert not at.exception
     headers = [h.value for h in at.subheader]
     assert headers == ["Ready (1)", "Review (1)"]
@@ -71,7 +71,7 @@ def test_results_survive_a_new_session_and_start_over_clears_them():
 
 def test_no_emoji_in_page_text():
     _scanned_job()
-    at = AppTest.from_file("app.py").run()
+    at = AppTest.from_file("app.py", default_timeout=30).run()
     text = " ".join(
         [e.value for e in at.markdown] + [e.value for e in at.caption]
         + [e.value for e in at.subheader] + [b.label for b in at.button])

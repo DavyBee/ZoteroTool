@@ -45,7 +45,6 @@ _ACCEPT = ("text/html,application/xhtml+xml,application/xml;q=0.9,"
            "application/pdf,*/*;q=0.8")
 _HEADERS = {"Accept": _ACCEPT, "Accept-Language": "en-US,en;q=0.9"}
 
-_CHUNK = 65536
 
 
 # A scan reads the same page up to three times (PDF search, citation tags, the
@@ -144,11 +143,11 @@ def _get_cffi(url, max_bytes, timeout):
             return None, "", r.status_code   # 403 challenge, 404 gone, etc.
         ct = (r.headers.get("Content-Type") or "").lower()
         buf = bytearray()
-        for chunk in r.iter_content(_CHUNK):
+        for chunk in r.iter_content():
             buf += chunk
             if len(buf) >= max_bytes:
                 break
-        return bytes(buf), ct, r.status_code
+        return bytes(buf[:max_bytes]), ct, r.status_code
     except Exception:
         return None, "", 0
     finally:

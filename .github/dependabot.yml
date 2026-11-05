@@ -1,0 +1,31 @@
+# Weekly update checks, early Sunday morning so an update (which redeploys the
+# app on Streamlit Cloud) doesn't land in the middle of someone's review.
+# Minor and patch updates are grouped into one pull request and merge on their
+# own once the tests pass (see workflows/dependabot-automerge.yml). Major
+# updates stay open for a person to look at. Security fixes are opened as
+# soon as they are published.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: sunday
+      time: "03:00"
+      timezone: America/New_York
+    groups:
+      python-packages:
+        patterns: ["*"]
+        update-types: [minor, patch]
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: sunday
+      time: "03:00"
+      timezone: America/New_York
+    groups:
+      github-actions:
+        patterns: ["*"]
