@@ -440,11 +440,22 @@ class Job:
                     p["include"] = decision in ("correct", "edited")
                     return
 
-    def edit(self, url: str, fields: dict) -> None:
-        """Change a Review item's details without deciding on it yet."""
+    def move_to_review(self, url: str) -> None:
+        """Send a Ready item to Review, to decide on it there."""
         with self.lock:
             for p in self.papers:
-                if p["url"] == url and p.get("bucket") == REVIEW \
+                if p["url"] == url and p.get("bucket") == READY \
+                        and not p.get("zotero_key"):
+                    p["bucket"], p["reason"] = REVIEW, "Moved from Ready"
+                    p["include"] = False
+                    p.pop("decision", None)
+                    return
+
+    def edit(self, url: str, fields: dict) -> None:
+        """Change a Ready or Review item's details (without deciding on it)."""
+        with self.lock:
+            for p in self.papers:
+                if p["url"] == url and p.get("bucket") in (READY, REVIEW) \
                         and not p.get("zotero_key"):
                     if all(p.get(k) == v for k, v in fields.items()):
                         return
@@ -522,12 +533,6 @@ class Job:
                 p.setdefault("upload_error", str(exc))
         with self.lock:
             self.upload_result = result
-            # Ready items left unchecked wait in Review, to be uploaded or
-            # removed later.
-            for p in self.papers:
-                if (p.get("bucket") == READY and not p.get("include")
-                        and not p.get("zotero_key")):
-                    p["bucket"], p["reason"] = REVIEW, "Left out of upload"
             self.phase = DONE
 
     # Status ----------------------------------------------------------------

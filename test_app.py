@@ -244,7 +244,7 @@ def test_upload_asks_first_when_items_are_left_out():
     _buttons(at)["Upload 1 to Zotero"].click().run()
     text = " ".join(m.value for m in at.markdown)
     assert "Upload 1 item to Zotero?" in text
-    assert "1 in Review isn't marked for upload." in text
+    assert "1 in Review isn't marked ready for upload." in text
     assert job.snapshot()["phase"] == scan.SCANNED        # nothing uploaded yet
     _buttons(at)["Cancel"].click().run()
     assert job.snapshot()["phase"] == scan.SCANNED

@@ -240,15 +240,6 @@ def search_controls(job: scan.Job, snap: dict) -> None:
 
 # ── Step 2: Scan and review ───────────────────────────────────────────────────
 
-def _on_edit(key: str, urls: list[str]) -> None:
-    job = scan.current_job()
-    if job is None:
-        return
-    for row, change in st.session_state[key]["edited_rows"].items():
-        if "Upload" in change:
-            job.set_include(urls[int(row)], bool(change["Upload"]))
-
-
 def _short_authors(authors: list[str]) -> str:
     """Last names, "et al." after three: "Borg, Passaro, Hermo et al."."""
     last = [a.split(",")[0].strip() for a in authors if a and a.strip()]
@@ -261,42 +252,6 @@ def _status(p: dict) -> str:
     if p.get("upload_error"):
         return "Failed"
     return ""
-
-
-def _table(items: list[dict], key: str, review: bool, show_status: bool,
-           locked: bool) -> None:
-    rows = []
-    for p in items:
-        row = {"Upload": bool(p.get("include")), "Link": p["url"]}
-        if show_status:
-            row["Status"] = _status(p)
-        if review:
-            row["Reason"] = p.get("reason", "")
-        row["Title"] = p.get("title") or p.get("slack_file_name") or p["url"]
-        row["Authors"] = _short_authors(p.get("authors") or [])
-        if review:
-            row["Summary"] = p.get("summary") or ""
-        else:
-            row["Year"] = p.get("year") or ""
-            row["Journal"] = p.get("journal") or ""
-        rows.append(row)
-    columns = list(rows[0]) if rows else []
-    st.data_editor(
-        rows, key=key, hide_index=True,
-        disabled=columns if locked else [c for c in columns if c != "Upload"],
-        column_config={
-            "Upload": st.column_config.CheckboxColumn(width=70),
-            "Status": st.column_config.TextColumn(width=90),
-            "Reason": st.column_config.TextColumn(width=170),
-            "Title": st.column_config.TextColumn(width="medium" if review else "large"),
-            "Authors": st.column_config.TextColumn(width=180),
-            "Year": st.column_config.TextColumn(width=50),
-            "Journal": st.column_config.TextColumn(width=150),
-            "Summary": st.column_config.TextColumn(width=220),
-            "Link": st.column_config.LinkColumn(display_text="Open", width=50),
-        },
-        on_change=_on_edit, args=(key, [p["url"] for p in items]),
-    )
 
 
 # ── Review cards ──────────────────────────────────────────────────────────────
@@ -354,7 +309,7 @@ def _decided_table(label: str, items: list[dict], job: scan.Job, locked: bool,
     if not items:
         return
     with st.expander(f"{label} ({len(items)})", key=key):
-        _review_editor(job, items, f"t_{key}", locked, undo=True)
+        _item_table(job, items, f"t_{key}", locked, "decided")
 
 
 def _bump_table() -> None:
@@ -364,30 +319,40 @@ def _bump_table() -> None:
 
 
 def _review_table(job: scan.Job, items: list[dict], locked: bool) -> None:
-    _review_editor(job, items, "t_left", locked, undo=False)
+    _item_table(job, items, "t_left", locked, "left")
 
 
-def _review_editor(job: scan.Job, items: list[dict], name: str, locked: bool,
-                   undo: bool) -> None:
-    """Review items as an editable table, laid out like Ready: tick rows in
-    the first column, then act on them with the buttons below. Title,
-    authors, year, and journal can be changed in place."""
-    rows = [{"Select": False, "Link": p["url"], "Reason": p.get("reason", ""),
-             "Title": p.get("title") or p.get("slack_file_name") or "",
-             "Authors": "; ".join(p.get("authors") or []),
-             "Year": p.get("year") or "", "Journal": p.get("journal") or "",
-             "Summary": p.get("summary") or ""} for p in items]
+def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
+                mode: str, show_status: bool = False) -> None:
+    """Items as an editable table: tick rows in the first column, then act on
+    them with the buttons below. Title, authors, year, and journal can be
+    changed in place and are kept with Save edits. `mode` is "ready",
+    "left" (to review), or "decided" (marked for upload, or removed)."""
+    rows = []
+    for p in items:
+        row = {"Select": False, "Link": p["url"]}
+        if show_status:
+            row["Status"] = _status(p)
+        if mode != "ready":
+            row["Reason"] = p.get("reason", "")
+        row.update({"Title": p.get("title") or p.get("slack_file_name") or "",
+                    "Authors": "; ".join(p.get("authors") or []),
+                    "Year": p.get("year") or "", "Journal": p.get("journal") or ""})
+        if mode != "ready":
+            row["Summary"] = p.get("summary") or ""
+        rows.append(row)
     urls = [p["url"] for p in items]
     key = f"{name}_{st.session_state.get('table_version', 0)}"
     columns = list(rows[0])
     st.data_editor(
         rows, key=key, hide_index=True,
-        disabled=columns if locked else ["Link", "Reason", "Summary"],
+        disabled=columns if locked else ["Link", "Status", "Reason", "Summary"],
         column_config={
             "Select": st.column_config.CheckboxColumn("", width=40),
             "Link": st.column_config.LinkColumn(display_text="Open", width=50),
+            "Status": st.column_config.TextColumn(width=90),
             "Reason": st.column_config.TextColumn(width=170),
-            "Title": st.column_config.TextColumn(width="medium"),
+            "Title": st.column_config.TextColumn(width="medium" if mode != "ready" else "large"),
             "Authors": st.column_config.TextColumn(width=180, help="Last, First; Last, First"),
             "Year": st.column_config.TextColumn(width=70),
             "Journal": st.column_config.TextColumn(width=150),
@@ -409,26 +374,36 @@ def _review_editor(job: scan.Job, items: list[dict], name: str, locked: bool,
               if c.get("Select") and int(r) < len(items)
               and not items[int(r)].get("zotero_key")]
     n = len(chosen)
-    if undo:
-        if bar.button(f"Undo ({n})" if n else "Undo", disabled=locked or not n,
-                      key=f"{name}_undo"):
+
+    def act(label: str, primary: bool = False) -> bool:
+        return bar.button(f"{label} ({n})" if n else label,
+                          type="primary" if primary else "secondary",
+                          disabled=locked or not n, key=f"{name}_{label}")
+
+    if mode == "decided":
+        if act("Undo"):
             for p in chosen:
                 job.decide(p["url"], None)
-            _bump_table()
-            st.rerun()
+            _done()
         return
-    if bar.button(f"Mark ready for upload ({n})" if n else "Mark ready for upload",
-                  type="primary",
-                  disabled=locked or not n, key=f"{name}_mark"):
+    if mode == "ready":
+        if act("Move to Review"):
+            for p in chosen:
+                job.move_to_review(p["url"])
+            _done()
+    elif act("Mark ready for upload", primary=True):
         mark_for_upload(job, chosen)
-        _bump_table()
-        st.rerun()
-    if bar.button(f"Remove ({n})" if n else "Remove", disabled=locked or not n,
-                  key=f"{name}_remove"):
+        _done()
+    if act("Remove"):
         for p in chosen:
+            job.move_to_review(p["url"])          # a Ready item joins Review first
             job.decide(p["url"], "removed")
-        _bump_table()
-        st.rerun()
+        _done()
+
+
+def _done() -> None:
+    _bump_table()
+    st.rerun()
 
 
 def apply_review_edits(job: scan.Job, urls: list[str], edited_rows: dict) -> None:
@@ -622,9 +597,9 @@ def step_scan(job: scan.Job | None) -> None:
         with st.expander(f"Ready ({_count(shown_ready, ready)})", expanded=True,
                          key="exp_ready"):
             if shown_ready:
-                st.caption("Metadata found. Clear a box to leave an item out.")
-                _table(shown_ready, f"t_ready_{suffix}", review=False,
-                       show_status=uploaded_any, locked=locked)
+                st.caption("Metadata found. These are uploaded unless moved to Review or removed.")
+                _item_table(job, shown_ready, f"t_ready_{suffix}", locked, "ready",
+                            show_status=uploaded_any)
 
     st.markdown(f"**Review ({_count(shown_review, review)})**")
     if shown_review:
@@ -696,9 +671,9 @@ def step_upload(job: scan.Job | None) -> None:
         label = "Retry failed" if failed and n_selected == len(failed) else \
             f"Upload {n_selected} to Zotero"
         if st.button(label, type="primary", disabled=not zotero_ready()):
-            unchecked, unmarked = _left_out(job)
-            if unchecked or unmarked:
-                confirm_upload(job, n_selected, unchecked, unmarked)
+            unmarked = _left_out(job)
+            if unmarked:
+                confirm_upload(job, n_selected, unmarked)
             else:
                 job.start_upload(zotero_client.make_zotero_client)
                 st.rerun()
@@ -712,24 +687,18 @@ def step_upload(job: scan.Job | None) -> None:
             st.rerun()
 
 
-def _left_out(job: scan.Job) -> tuple[int, int]:
-    """(unchecked Ready items, Review items not marked for upload), not
-    counting anything already uploaded or removed."""
-    ready = [p for p in job.items(scan.READY) if not p.get("zotero_key")]
-    review = [p for p in job.items(scan.REVIEW)
-              if not p.get("zotero_key") and p.get("decision") != "removed"]
-    return (sum(1 for p in ready if not p.get("include")),
-            sum(1 for p in review if not p.get("include")))
+def _left_out(job: scan.Job) -> int:
+    """Review items not marked for upload, not counting removed or uploaded ones."""
+    return sum(1 for p in job.items(scan.REVIEW)
+               if not p.get("zotero_key") and p.get("decision") != "removed"
+               and not p.get("include"))
 
 
 @st.dialog("Upload to Zotero")
-def confirm_upload(job: scan.Job, n: int, unchecked: int, unmarked: int) -> None:
+def confirm_upload(job: scan.Job, n: int, unmarked: int) -> None:
     st.write(f"Upload {n} {'item' if n == 1 else 'items'} to Zotero?")
-    if unchecked:
-        st.write(f"{unchecked} unchecked in Ready won't be uploaded.")
-    if unmarked:
-        st.write(f"{unmarked} in Review {'isn' if unmarked == 1 else 'aren'}'t "
-                 "marked for upload.")
+    st.write(f"{unmarked} in Review {'isn' if unmarked == 1 else 'aren'}'t "
+             "marked ready for upload.")
     row = st.container(horizontal=True)
     if row.button("Upload", type="primary", key="confirm_upload"):
         job.start_upload(zotero_client.make_zotero_client)

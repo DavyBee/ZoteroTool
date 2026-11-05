@@ -370,16 +370,20 @@ def test_web_page_without_a_site_name_gets_its_domain():
     assert "journal" not in q
 
 
-def test_unchecked_ready_items_wait_in_review_after_an_upload():
-    job = scan.Job(_papers(2), None, title_search=lambda *a: None,
+def test_ready_items_can_be_edited_moved_to_review_or_removed():
+    job = scan.Job(_papers(3), None, title_search=lambda *a: None,
                    enrich=lambda p, *a: {"metadata_source": "translator", "title": p["url"]})
     job.start()
     _wait(job, scan.SCANNED)
-    job.set_include("https://a.org/1", False)
-    job.start_upload(lambda: FakeZotero())
-    _wait(job, scan.DONE)
-    left = next(p for p in job.papers if p["url"] == "https://a.org/1")
-    assert (left["bucket"], left["reason"]) == (scan.REVIEW, "Left out of upload")
+    a, b, c = job.papers
+    job.edit(a["url"], {"title": "Fixed"})
+    assert (a["title"], a["bucket"], a["include"]) == ("Fixed", scan.READY, True)
+    job.move_to_review(b["url"])
+    assert (b["bucket"], b["reason"], b["include"]) == (scan.REVIEW, "Moved from Ready", False)
+    job.move_to_review(c["url"])
+    job.decide(c["url"], "removed")
+    assert (c["bucket"], c["decision"], c["include"]) == (scan.REVIEW, "removed", False)
+    assert [p["url"] for p in job.selected()] == [a["url"]]
 
 
 def test_pause_holds_the_search_and_resume_finishes_it():
