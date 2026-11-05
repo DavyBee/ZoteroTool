@@ -486,8 +486,11 @@ def _same_work(p: dict, q: dict, t: str, y: Optional[str]) -> bool:
 
 
 def _tidy(p: dict) -> None:
-    """An "article" with no authors, no year, and no DOI is usually a journal
-    homepage or issue page; save it as a web page."""
+    """Clean the title, whichever lookup produced it (HTML tags such as <br>
+    turn up in titles). An "article" with no authors, no year, and no DOI is
+    usually a journal homepage or issue page; save it as a web page."""
+    if p.get("title"):
+        p["title"] = metadata.clean_title(p["title"])
     if p.get("item_type") in ("journalArticle", "preprint", "conferencePaper") \
             and not p.get("authors") and not p.get("year") and not doi_key(p.get("doi")):
         p["item_type"] = "webpage"

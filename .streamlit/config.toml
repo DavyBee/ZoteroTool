@@ -16,7 +16,7 @@ secondaryBackgroundColor = "#f4f5f7"
 textColor = "#1c1f24"
 
 [theme.dark]
-primaryColor = "#8fb4e3"
+primaryColor = "#3f74b8"
 backgroundColor = "#111418"
 secondaryBackgroundColor = "#1b1f25"
 textColor = "#e4e7eb"

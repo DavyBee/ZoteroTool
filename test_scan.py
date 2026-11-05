@@ -335,3 +335,9 @@ def test_short_titles_merge_only_with_the_same_year():
         "https://nber.org/w1.pdf": {"title": "Rent Guarantee Insurance", "year": "2024", "authors": ["A"]},
         "https://nber.org/old": {"title": "Rent Guarantee Insurance", "year": "2019", "authors": ["A"]},
     })) == 2
+
+
+def test_every_title_is_cleaned_after_lookup():
+    p = {"url": "https://a.org", "title": "Cracking Down, Pricing Up <br>", "authors": ["A"]}
+    scan._tidy(p)
+    assert p["title"] == "Cracking Down, Pricing Up"
