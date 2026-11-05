@@ -17,6 +17,7 @@ import threading
 import time
 import traceback
 import zipfile
+from urllib.parse import urlsplit
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Optional
@@ -535,6 +536,12 @@ def _tidy(p: dict) -> None:
         p["item_type"] = "webpage"
 
 
+def site_name(url: str) -> str:
+    """The link's domain without "www.", e.g. "sciencedirect.com"."""
+    host = urlsplit(url).netloc.lower()
+    return host[4:] if host.startswith("www.") else host
+
+
 def _prepare_for_upload(p: dict) -> None:
     """An item with no title (a link, an inaccessible page) is saved as a web
     page titled with its URL, so Zotero never rejects it for its type."""
@@ -546,6 +553,9 @@ def _prepare_for_upload(p: dict) -> None:
     if p.get("metadata_source") in ("link", "non_paper", "needs_manual", "none") \
             and not p.get("item_type"):
         p["item_type"] = "webpage"
+    # A web page with no site name gets its domain (Zotero's Website field).
+    if p.get("item_type") == "webpage" and not p.get("journal"):
+        p["journal"] = site_name(p["url"])
 
 
 def _label(p: dict) -> str:

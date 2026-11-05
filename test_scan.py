@@ -358,3 +358,13 @@ def test_decide_sets_and_clears_review_decisions():
         job.decide(p["url"], "not_source")
     job.decide(p["url"], None)
     assert "decision" not in p and not p["include"]
+
+
+def test_web_page_without_a_site_name_gets_its_domain():
+    p = {"url": "https://www.sciencedirect.com/topics/economics/iv", "title": "IV",
+         "item_type": "webpage", "metadata_source": "link"}
+    scan._prepare_for_upload(p)
+    assert p["journal"] == "sciencedirect.com"
+    q = {"url": "https://a.org/x", "title": "T", "item_type": "journalArticle"}
+    scan._prepare_for_upload(q)
+    assert "journal" not in q

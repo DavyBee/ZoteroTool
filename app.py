@@ -329,26 +329,30 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
     nav.caption(f"{i + 1} of {len(items)} · {decided} decided")
 
     with st.container(border=True):
-        status = [p.get("reason", "")]
-        if p.get("decision"):
-            status.append(_DECISION_LABELS[p["decision"]])
-        if p.get("zotero_key"):
-            status.append("Uploaded")
-        st.caption(" · ".join(s for s in status if s))
-        st.markdown(f"#### {_md(p.get('title') or p.get('slack_file_name') or p['url'])}")
-        meta = [_short_authors(p.get("authors") or []), p.get("year") or "",
-                p.get("journal") or ""]
-        if any(meta):
-            st.caption(" · ".join(m for m in meta if m))
-        if p.get("summary"):
-            st.write(p["summary"])
+        badges = st.container(horizontal=True)
+        with badges:
+            st.badge(p.get("reason") or "Review", color="orange")
+            if p.get("decision"):
+                st.badge(_DECISION_LABELS[p["decision"]], color="green")
+            if p.get("zotero_key"):
+                st.badge("Uploaded", color="blue")
+        _field("Title", p.get("title") or p.get("slack_file_name"))
+        _field("Authors", _all_authors(p.get("authors") or []))
+        _field("Year", p.get("year"))
+        _field("Website" if p.get("item_type") == "webpage" else "Journal",
+               p.get("journal") or (scan.site_name(p["url"])
+                                    if p.get("item_type") == "webpage" else None))
+        st.markdown(f"**Link:** [{_md(_short_link(p['url']))}]({p['url']})")
+        _field("Link summary", p.get("summary"))
         comments = p.get("comments") or []
         if comments:
             first = comments[0]
             text = first.get("text") or ""
-            st.caption(f"Slack · {first.get('author') or ''}: "
-                       f"{text[:400] + ('...' if len(text) > 400 else '')}")
-        st.link_button("Open link", p["url"])
+            replies = len(comments) - 1
+            more = f" ({replies} {'reply' if replies == 1 else 'replies'})" if replies else ""
+            _field("Original Slack message",
+                   f"{first.get('author') or ''}: "
+                   f"{text[:400] + ('...' if len(text) > 400 else '')}{more}")
 
         frozen = locked or bool(p.get("zotero_key"))
         if st.session_state.get("editing_url") == p["url"] and not frozen:
@@ -364,18 +368,35 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
             _decide(job, items, i, "removed")
 
 
+def _field(label: str, value) -> None:
+    shown = _md(str(value)) if value else ":gray[Not found]"
+    st.markdown(f"**{label}:** {shown}")
+
+
+def _all_authors(authors: list[str]) -> str:
+    names = [a.strip() for a in authors if a and a.strip()]
+    return "; ".join(names[:8]) + (" et al." if len(names) > 8 else "")
+
+
+def _short_link(url: str) -> str:
+    """'sciencedirect.com/topics/economics/instrumental-…' for display."""
+    text = re.sub(r"^https?://(www\.)?", "", url)
+    return text if len(text) <= 60 else text[:57] + "..."
+
+
 def _edit_form(job: scan.Job, items: list[dict], i: int) -> None:
     p = items[i]
     k = zlib.crc32(p["url"].encode())      # one set of fields per item
     with st.form(key=f"edit_{k}", border=False):
-        title = st.text_input("Title", value=p.get("title") or "", key=f"edit_title_{k}")
+        title = st.text_input("Title", value=p.get("title") or p.get("slack_file_name") or "",
+                              key=f"edit_title_{k}")
         authors = st.text_input("Authors", value="; ".join(p.get("authors") or []),
                                 help="Last, First; Last, First", key=f"edit_authors_{k}")
         c1, c2 = st.columns(2)
         year = c1.text_input("Year", value=p.get("year") or "", key=f"edit_year_{k}")
         kind = p.get("item_type") if p.get("item_type") in _ITEM_TYPES else "journalArticle"
         item_type = c2.selectbox("Type", _ITEM_TYPES, index=_ITEM_TYPES.index(kind))
-        journal = st.text_input("Journal or publisher", value=p.get("journal") or "",
+        journal = st.text_input("Journal, publisher, or website", value=p.get("journal") or "",
                                 key=f"edit_journal_{k}")
         row = st.container(horizontal=True)
         saved = row.form_submit_button("Save", type="primary")
