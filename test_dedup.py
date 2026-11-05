@@ -428,3 +428,17 @@ def test_identical_title_matches_when_the_year_is_missing_and_details_are_thin()
     # A short title with a different author and no year doesn't match
     assert ix.match({"url": "https://w", "title": "Rent Guarantee Insurance Effects",
                      "authors": ["Smith, A"]}) is None
+
+
+def test_journal_articles_a_year_apart_match_but_working_papers_dont():
+    ix = zi.LibraryIndex()
+    ix.add(item("A", title="Where Is the Housing Shortage?", date="2025",
+                creators=[{"lastName": "McClure"}]))                     # journalArticle
+    ix.add(item("W", itemType="report", title="What Works and for Whom in School Capital",
+                date="2024", creators=[{"lastName": "Biasi"}]))
+    assert ix.match({"url": "https://x", "title": "Where Is the Housing Shortage?",
+                     "year": "2024", "authors": ["McClure, K"],
+                     "item_type": "journalArticle"}) == ("A", "Title")
+    assert ix.match({"url": "https://y", "title": "What Works and for Whom in School Capital",
+                     "year": "2025", "authors": ["Biasi, B"],
+                     "item_type": "journalArticle"}) is None

@@ -131,7 +131,8 @@ class LibraryIndex:
         self.version = 0
         self._by_doi: dict[str, str] = {}
         self._by_url: dict[str, str] = {}
-        self._by_title: dict[str, list[tuple[Optional[str], Optional[str], str]]] = {}
+        # title → [(year, first author, item type, key)]
+        self._by_title: dict[str, list[tuple]] = {}
         self.titles: dict[str, str] = {}      # item key → title as stored in Zotero
         self.size = 0
 
@@ -162,7 +163,7 @@ class LibraryIndex:
             creators = data.get("creators") or []
             names = [c.get("lastName") or c.get("name") or "" for c in creators]
             self._by_title.setdefault(t, []).append(
-                (year_of(data.get("date")), first_author(names), key))
+                (year_of(data.get("date")), first_author(names), data.get("itemType"), key))
 
     def item_url(self, key: str) -> str:
         return f"{self.web_base}/items/{key}" if self.web_base else ""
@@ -182,8 +183,9 @@ class LibraryIndex:
 
     def match(self, paper: dict) -> Optional[tuple[str, str]]:
         """(item key, "DOI" | "URL" | "Title") using everything enrichment found.
-        An identical title counts when the years match. Different years are
-        different versions (a working paper and the article) and don't match.
+        An identical title counts when the years match, or for two journal
+        articles a year apart (online and print dates). Otherwise different
+        years are different versions (a working paper and the article).
         When a year is missing, it counts if the first authors match, the title
         is six words or more, or this item has no authors (a landing page or a
         thin record); short generic titles alone don't."""
@@ -196,9 +198,14 @@ class LibraryIndex:
         year = year_of(paper.get("year"))
         author = first_author(paper.get("authors") or [])
         words = len(t.split())
-        for item_year, item_author, key in self._by_title[t]:
+        kind = paper.get("item_type")
+        for item_year, item_author, item_kind, key in self._by_title[t]:
             if year and item_year:
                 if year == item_year:
+                    return key, "Title"
+                # A journal article's online and print dates often differ by a
+                # year. A working paper and its article are different types.
+                if kind == item_kind == "journalArticle" and abs(int(year) - int(item_year)) == 1:
                     return key, "Title"
             elif author and item_author and author == item_author:
                 return key, "Title"
