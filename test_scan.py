@@ -103,8 +103,8 @@ def test_collect_uses_users_json_for_workflow_submitters(tmp_path):
     ({"metadata_source": "translator", "title": "T"}, "ready", ""),
     ({"metadata_source": "translator"}, "review", "No title found"),
     ({"metadata_source": "llm", "title": "T"}, "ready", ""),
-    ({"metadata_source": "llm", "title": "T", "low_context": True}, "review", "Little text to read"),
-    ({"metadata_source": "link"}, "review", "Web page, not a paper"),
+    ({"metadata_source": "llm", "title": "T", "low_context": True}, "review", "Page could not be accessed"),
+    ({"metadata_source": "link", "title": "Journal homepage"}, "ready", ""),
     ({"metadata_source": "non_paper"}, "review", "Likely not a source"),
     ({"metadata_source": "needs_manual"}, "review", "Page could not be accessed"),
     ({"metadata_source": "pdf_saved"}, "review", "PDF has no readable text"),
@@ -115,9 +115,12 @@ def test_classify(fields, bucket, reason):
     assert scan.classify({"url": "https://a.org", **fields}) == (bucket, reason)
 
 
-def test_classify_tweet():
+def test_tweets_are_ready_and_titled_by_handle():
+    from slack_parser import tweet_title
     assert scan.classify({"url": "https://x.com/u/status/1",
-                          "metadata_source": "link"}) == ("review", "Tweet")
+                          "metadata_source": "link"}) == ("ready", "")
+    assert tweet_title("https://x.com/MatthewStaiger/status/1770873531364257837") == \
+        "Post by @MatthewStaiger"
 
 
 # ── Job ───────────────────────────────────────────────────────────────────────
@@ -211,12 +214,13 @@ def test_upload_sends_only_selected_items_and_retries_failures():
     assert len(zot.created) == 3
 
 
-def test_authorless_web_page_goes_to_review():
+def test_web_pages_are_ready_and_upload_as_web_pages():
     p = {"url": "https://docs.google.com/document/d/x", "metadata_source": "translator",
          "title": "Lab Bibliography", "item_type": "webpage"}
-    assert scan.classify(p) == ("review", "Web page, not a paper")
-    p["authors"] = ["Doe, Jane"]
     assert scan.classify(p) == ("ready", "")
+    link = {"url": "https://journal.org", "metadata_source": "link"}
+    scan._prepare_for_upload(link)
+    assert (link["title"], link["item_type"]) == ("https://journal.org", "webpage")
 
 
 def test_landing_page_merges_with_article_but_editions_stay_apart():

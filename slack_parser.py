@@ -113,12 +113,18 @@ def clean_url(url: str) -> str:
     return urlunsplit(parts._replace(query=urlencode(kept, doseq=True)))
 
 
-_TWEET_RE = re.compile(r"https?://(?:www\.|mobile\.)?(?:twitter|x)\.com/[^/]+/status/\d+", re.I)
+_TWEET_RE = re.compile(r"https?://(?:www\.|mobile\.)?(?:twitter|x)\.com/([^/?#]+)/status/\d+", re.I)
 
 
 def is_tweet_url(url: str) -> bool:
     """True for a twitter.com / x.com link to an individual post."""
     return bool(_TWEET_RE.match((url or "").strip()))
+
+
+def tweet_title(url: str) -> str:
+    """'Post by @handle' for a tweet link."""
+    m = _TWEET_RE.match((url or "").strip())
+    return f"Post by @{m.group(1)}" if m else "Post on X"
 
 
 # ── Types ─────────────────────────────────────────────────────────────────────

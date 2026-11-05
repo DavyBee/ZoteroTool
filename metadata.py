@@ -98,6 +98,46 @@ class _MetaTagParser(HTMLParser):
             self.tags.setdefault(name, []).append(content)
 
 
+class _TitleParser(HTMLParser):
+    """The page's og:title, else its <title>."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.og_title = ""
+        self.title = ""
+        self._in_title = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "title":
+            self._in_title = True
+        elif tag == "meta":
+            a = {k.lower(): (v or "") for k, v in attrs}
+            if (a.get("property") or a.get("name") or "").lower() == "og:title":
+                self.og_title = self.og_title or " ".join(a.get("content", "").split())
+
+    def handle_endtag(self, tag):
+        if tag == "title":
+            self._in_title = False
+
+    def handle_data(self, data):
+        if self._in_title and not self.title:
+            self.title = " ".join(data.split())
+
+
+def page_title(url: str) -> Optional[str]:
+    """The title a web page gives itself, for saving it as a link. Uses the
+    copy already fetched during the scan."""
+    raw, content_type, _status = http_fetch.fetch(url, max_bytes=2_000_000)
+    if raw is None or "html" not in (content_type or "").lower():
+        return None
+    parser = _TitleParser()
+    try:
+        parser.feed(raw.decode("utf-8", errors="replace"))
+    except Exception:
+        pass
+    return (parser.og_title or parser.title or None)
+
+
 def parse_citation_tags(html_bytes: bytes) -> dict[str, list[str]]:
     parser = _MetaTagParser()
     try:
@@ -512,7 +552,7 @@ def _crossref_year(data: dict) -> Optional[str]:
 _LLM_REQUIRED_KEYS = {"title", "authors", "year", "item_type"}
 
 # With less page text than this, the AI is mostly guessing from the link and the
-# Slack messages, so the item goes to Review ("Little text to read").
+# Slack messages, so the item goes to Review ("Page could not be accessed").
 _LOW_CONTEXT_CHARS = 500
 
 
@@ -823,10 +863,11 @@ def enrich_paper(paper: dict, anthropic_key: Optional[str] = None,
     }
 
     # A tweet is saved as a plain link; it has no bibliographic metadata.
-    from slack_parser import is_tweet_url
+    from slack_parser import is_tweet_url, tweet_title
     if is_tweet_url(url):
         fields["metadata_source"] = "link"
         fields["item_type"] = "webpage"
+        fields["title"] = tweet_title(url)
         return fields
 
     # A file uploaded to Slack: download it and have the AI read it. The
@@ -940,7 +981,7 @@ def enrich_paper(paper: dict, anthropic_key: Optional[str] = None,
 
             # 5c. Nothing citable. What it was decides the Review reason:
             #     page loaded and not worth keeping   → non_paper ("Likely not a source")
-            #     page loaded, a link worth keeping   → link ("Web page, not a paper")
+            #     page loaded, a link worth keeping   → link (uploaded as a web page)
             #     page gone (404/410) and not a paper → non_paper
             #     anything else                       → needs_manual ("Page could not
             #                                            be accessed")
@@ -950,6 +991,8 @@ def enrich_paper(paper: dict, anthropic_key: Optional[str] = None,
                 fields["metadata_source"] = "non_paper"
             elif fetch_state == "ok" and category == "link":
                 fields["metadata_source"] = "link"
+                fields["item_type"] = "webpage"
+                fields["title"] = page_title(url) or url
             elif fetch_state == "dead" and category != "paper":
                 fields["metadata_source"] = "non_paper"
             else:

@@ -235,3 +235,23 @@ def test_ai_reply_without_text_is_an_error_not_a_crash(monkeypatch, tmp_path):
 ])
 def test_clean_doi(doi, cleaned):
     assert metadata._clean_doi(doi) == cleaned
+
+
+def test_page_title_prefers_og_title(monkeypatch):
+    _serve(monkeypatch, {
+        "https://a.org": b'<html><head><title>Home | Site</title>'
+                         b'<meta property="og:title" content="Housing Policy Debate"></head></html>',
+        "https://b.org": b"<html><head><title>  Eviction\n Lab  Data </title></head></html>",
+    })
+    assert metadata.page_title("https://a.org") == "Housing Policy Debate"
+    assert metadata.page_title("https://b.org") == "Eviction Lab Data"
+    assert metadata.page_title("https://blocked.org") is None
+
+
+def test_tweets_get_a_title_without_any_lookup(monkeypatch):
+    calls = []
+    _stub_stages(monkeypatch, calls)
+    out = metadata.enrich_paper({"url": "https://x.com/LevyAntoine/status/1"}, None, "/dev/null")
+    assert calls == []
+    assert (out["metadata_source"], out["title"], out["item_type"]) == \
+        ("link", "Post by @LevyAntoine", "webpage")

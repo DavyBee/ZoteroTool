@@ -170,7 +170,7 @@ def render_results(job: scan.Job) -> None:
 
     st.subheader(f"Review ({len(review)})", anchor=False)
     if review:
-        st.caption("Low confidence or likely not a source. "
+        st.caption("Could not be identified, or probably not a source. "
                    "Only selected items are uploaded.")
         _table(job, review, "t_review", review=True)
 

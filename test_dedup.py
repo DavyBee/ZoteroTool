@@ -236,15 +236,22 @@ def _hinted(enrich_fields, title_search=lambda *a: None):
     return p
 
 
+def test_low_context_ai_result_without_a_hint_needs_review():
+    job = _job([{"url": "https://a.org", "comments": []}],
+               lambda p, *a: {"metadata_source": "llm", "low_context": True, "title": "T"})
+    [p] = job.papers
+    assert (p["bucket"], p["reason"]) == (scan.REVIEW, "Page could not be accessed")
+
+
 def test_hint_confirms_low_context_ai_result():
     p = _hinted({"metadata_source": "llm", "low_context": True,
                  "title": "Where the Landlords Are: A Network Approach"})
     assert p["bucket"] == scan.READY
 
 
-def test_hint_mismatch_goes_to_review():
+def test_hint_mismatch_keeps_the_metadata_found_online():
     p = _hinted({"metadata_source": "translator", "title": "Journal Homepage"})
-    assert (p["bucket"], p["reason"]) == (scan.REVIEW, "Title differs from Slack post")
+    assert p["bucket"] == scan.READY and p["title"] == "Journal Homepage"
 
 
 def test_hint_title_is_searched_on_crossref_when_nothing_found():

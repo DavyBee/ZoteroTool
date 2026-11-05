@@ -24,7 +24,6 @@ from typing import Callable, Optional
 import metadata
 import slack_parser
 from records import new_paper, normalize_url
-from slack_parser import is_tweet_url
 from zotero_index import (LibraryIndex, doi_key, title_key, titles_match,
                           year_of)
 
@@ -145,8 +144,9 @@ FOUND_SOURCES = ("crossref_doi", "translator", "citation_tags", "llm")
 
 
 def classify(paper: dict) -> tuple[str, str]:
-    """(bucket, reason) for an enriched paper. Review items carry a short reason
-    shown in the app; Ready items have none; Existing items say what matched."""
+    """(bucket, reason) for an enriched paper. Review is only for items the
+    app couldn't handle; each carries a short reason. Existing items say what
+    matched. Tweets and other web pages are Ready and upload as links."""
     src = paper.get("metadata_source")
     if paper.get("existing_key"):
         return EXISTING, paper.get("existing_how", "")
@@ -154,24 +154,20 @@ def classify(paper: dict) -> tuple[str, str]:
         return REVIEW, "Not scanned"
     if paper.get("scan_error"):
         return REVIEW, "Error during scan"
-    if src in FOUND_SOURCES and paper.get("title") \
-            and paper.get("hint_mismatch"):
-        return REVIEW, "Title differs from Slack post"
-    if src in FOUND_SOURCES and paper.get("title") \
-            and paper.get("item_type") == "webpage" and not paper.get("authors"):
-        return REVIEW, "Web page, not a paper"
     if src in ("crossref_doi", "translator", "citation_tags"):
         if paper.get("title"):
             return READY, ""
         return REVIEW, "No title found"
     if src == "llm":
+        # With little page text the AI is guessing, unless the title typed into
+        # the Slack post confirms it.
         if paper.get("low_context") and not paper.get("hint_confirmed"):
-            return REVIEW, "Little text to read"
+            return REVIEW, "Page could not be accessed"
+        return READY, ""
+    if src == "link":
         return READY, ""
     if src == "slack_hint":
         return REVIEW, "Title from Slack post only"
-    if src == "link":
-        return REVIEW, "Tweet" if is_tweet_url(paper["url"]) else "Web page, not a paper"
     if src == "non_paper":
         return REVIEW, "Likely not a source"
     if src == "needs_manual":
@@ -186,9 +182,10 @@ def classify(paper: dict) -> tuple[str, str]:
 def apply_hints(paper: dict, title_search: Callable[..., Optional[tuple]]) -> None:
     """Use the title typed into a "Post an article" Slack form.
 
-    If enrichment found metadata, the typed title confirms it or flags it for
-    review. If enrichment found nothing, the typed title is searched on CrossRef;
-    failing that it becomes the item's title, and the item goes to Review."""
+    If enrichment found metadata, a matching typed title confirms it (which
+    matters when the AI had little to read). If enrichment found nothing, the
+    typed title is searched on CrossRef; failing that it becomes the item's
+    title, and the item goes to Review."""
     hints = paper.get("slack_hints") or {}
     hint = hints.get("title")
     if not hint:
@@ -197,8 +194,6 @@ def apply_hints(paper: dict, title_search: Callable[..., Optional[tuple]]) -> No
             and paper.get("title"):
         if titles_match(paper["title"], hint):
             paper["hint_confirmed"] = True
-        else:
-            paper["hint_mismatch"] = True
         return
     author = re.split(r",|&| and ", hints.get("authors") or "")[0].strip() or None
     found = title_search(hint, author) or (title_search(hint) if author else None)
