@@ -1,7 +1,7 @@
 """
 Live checks against the outside services the app depends on. Each uses a real,
 stable paper, so a failure points at one specific thing that changed. Run by
-the weekly GitHub check; skipped in the normal test run.
+the monthly GitHub check; skipped in the normal test run.
 
     pytest -m live
 """

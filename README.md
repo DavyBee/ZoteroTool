@@ -44,8 +44,8 @@ The app runs on Streamlit Community Cloud from this repository.
 
 Package versions are pinned in `requirements.txt`. Dependabot checks for updates every Sunday morning. Minor updates merge on their own once the tests pass; major updates wait for review.
 
-A weekly GitHub check confirms the outside services the app relies on still respond as expected, and emails the repository owner if one changes.
+A monthly GitHub check confirms the outside services the app relies on still respond as expected. It emails the repository owner only if something fails.
 
-Python 3.14 stops receiving security updates in October 2030, and Streamlit then moves apps to a newer version. Before then, delete the app and deploy it again on the newest Python version offered, and update `.python-version` and the version in `requirements.in`. The weekly check starts failing six months ahead as a reminder.
+Python 3.14 stops receiving security updates in October 2030, and Streamlit then moves apps to a newer version. Before then, delete the app and deploy it again on the newest Python version offered, and update `.python-version` and the version in `requirements.in`. The monthly check starts failing six months ahead as a reminder.
 
 If the default Claude model is retired, the app switches to the newest Haiku model on its own.

@@ -1,16 +1,16 @@
-# Weekly check that the outside services the app depends on still behave the
+# Monthly check that the outside services the app depends on still behave the
 # way the code expects, and that the app's Python version isn't close to its
-# end of life. GitHub emails the repository owner when this fails.
+# end of life. GitHub emails the repository owner only when this fails.
 #
 # The "newest-python" job runs the tests on the newest Python release. If it
 # fails, the pinned packages or the code won't work on newer Python yet, which
 # matters because Streamlit Cloud moves apps off a Python version when it
 # reaches end of life.
-name: Weekly check
+name: Monthly check
 
 on:
   schedule:
-    - cron: "0 10 * * 1"     # Mondays, 10:00 UTC
+    - cron: "0 10 1 * *"     # the 1st of each month, 10:00 UTC
   workflow_dispatch:
 
 permissions:
