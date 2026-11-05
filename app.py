@@ -293,32 +293,110 @@ def _decide(job: scan.Job, items: list[dict], i: int, decision: str,
     st.rerun()
 
 
-def review_cards(job: scan.Job, all_items: list[dict], locked: bool) -> None:
-    undecided = [q for q in all_items if not q.get("decision")]
-    marked = [q for q in all_items if q.get("decision") in ("correct", "edited")]
-    removed = [q for q in all_items if q.get("decision") == "removed"]
-    if undecided:
-        _card(job, undecided, locked)
-    else:
-        st.caption("All items reviewed.")
-    _decided_list("Marked for upload", marked, job, locked)
-    _decided_list("Removed", removed, job, locked)
+def review_section(job: scan.Job, items: list[dict], locked: bool) -> None:
+    """Review in three collapsible parts: items still to decide (as cards or
+    an editable table), items marked for upload, and removed items."""
+    undecided = [q for q in items if not q.get("decision")]
+    marked = [q for q in items if q.get("decision") in ("correct", "edited")]
+    removed = [q for q in items if q.get("decision") == "removed"]
+
+    with st.expander(f"Left to review ({len(undecided)})", expanded=True,
+                     key="exp_left"):
+        if not undecided:
+            st.caption("All items reviewed.")
+        else:
+            view = st.radio("Review view", ["Cards", "Table"], horizontal=True,
+                            label_visibility="collapsed", key="review_view")
+            if view == "Cards":
+                _card(job, undecided, locked)
+            else:
+                _review_editor(job, undecided, locked)
+    _decided_table("Marked for upload", marked, job, locked, "exp_marked")
+    _decided_table("Removed", removed, job, locked, "exp_removed")
 
 
-def _decided_list(label: str, items: list[dict], job: scan.Job, locked: bool) -> None:
-    """A collapsed list of decided items, each with Undo to send it back."""
+def _decided_table(label: str, items: list[dict], job: scan.Job, locked: bool,
+                   key: str) -> None:
+    """A collapsed table of decided items, each with Undo to send it back."""
     if not items:
         return
-    with st.expander(f"{label} ({len(items)})"):
+    with st.expander(f"{label} ({len(items)})", key=key):
+        widths = [1, 6, 3, 1, 1]
+        head = st.columns(widths)
+        for col, name in zip(head, ["Link", "Title", "Authors", "Year", ""]):
+            col.caption(name)
         for q in items:
-            c1, c2 = st.columns([6, 1], vertical_alignment="center")
-            c1.write(q.get("title") or q.get("slack_file_name") or q["url"])
-            frozen = locked or bool(q.get("zotero_key"))
-            if c2.button("Undo", key=f"undo_{zlib.crc32(q['url'].encode())}",
-                         disabled=frozen):
+            row = st.columns(widths, vertical_alignment="center")
+            row[0].markdown(f"[Open]({q['url']})")
+            row[1].write(q.get("title") or q.get("slack_file_name") or q["url"])
+            row[2].write(_short_authors(q.get("authors") or []))
+            row[3].write(q.get("year") or "")
+            if q.get("zotero_key"):
+                row[4].caption("Uploaded")
+            elif row[4].button("Undo", key=f"undo_{zlib.crc32(q['url'].encode())}",
+                               disabled=locked):
                 job.decide(q["url"], None)
                 _go_to(q["url"])
                 st.rerun()
+
+
+def _review_editor(job: scan.Job, items: list[dict], locked: bool) -> None:
+    """Undecided Review items as an editable table: tick Upload or Remove,
+    or change the details in place."""
+    rows = [{"Upload": False, "Remove": False, "Link": p["url"],
+             "Reason": p.get("reason", ""),
+             "Title": p.get("title") or p.get("slack_file_name") or "",
+             "Authors": "; ".join(p.get("authors") or []),
+             "Year": p.get("year") or "", "Journal": p.get("journal") or "",
+             "Summary": p.get("summary") or ""} for p in items]
+    # A new key after every change, so ticks can't carry over to other rows
+    # as decided items leave the table.
+    key = f"t_left_{st.session_state.get('left_version', 0)}"
+    st.data_editor(
+        rows, key=key, hide_index=True,
+        disabled=["Link", "Reason", "Summary"] if not locked else list(rows[0]),
+        column_config={
+            "Upload": st.column_config.CheckboxColumn(width=70),
+            "Remove": st.column_config.CheckboxColumn(width=70),
+            "Link": st.column_config.LinkColumn(display_text="Open", width=50),
+            "Reason": st.column_config.TextColumn(width=160),
+            "Title": st.column_config.TextColumn(width="medium"),
+            "Authors": st.column_config.TextColumn(width=160, help="Last, First; Last, First"),
+            "Year": st.column_config.TextColumn(width=60),
+            "Journal": st.column_config.TextColumn(width=140),
+            "Summary": st.column_config.TextColumn(width=200),
+        },
+        on_change=_on_review_edit, args=(key, [p["url"] for p in items]),
+    )
+
+
+def _on_review_edit(key: str, urls: list[str]) -> None:
+    job = scan.current_job()
+    if job is not None:
+        apply_review_edits(job, urls, st.session_state[key]["edited_rows"])
+    st.session_state.left_version = st.session_state.get("left_version", 0) + 1
+
+
+def apply_review_edits(job: scan.Job, urls: list[str], edited_rows: dict) -> None:
+    """Apply the review table's changes: edited details, then Upload or Remove."""
+    for row, change in edited_rows.items():
+        url = urls[int(row)]
+        fields = {}
+        if "Title" in change:
+            fields["title"] = change["Title"].strip() or None
+        if "Authors" in change:
+            fields["authors"] = [a.strip() for a in change["Authors"].split(";") if a.strip()]
+        if "Year" in change:
+            fields["year"] = change["Year"].strip() or None
+        if "Journal" in change:
+            fields["journal"] = change["Journal"].strip() or None
+        if fields:
+            job.edit(url, fields)
+        paper = next((p for p in job.papers if p["url"] == url), {})
+        if change.get("Remove"):
+            job.decide(url, "removed")
+        elif change.get("Upload"):
+            job.decide(url, "edited" if paper.get("was_edited") else "correct")
 
 
 def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
@@ -334,7 +412,7 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
     if nav.button("Next", disabled=i == len(items) - 1, key="card_next"):
         _go_to(urls[i + 1])
         st.rerun()
-    nav.caption(f"{i + 1} of {len(items)} · {len(items)} left to review")
+    nav.caption(f"{i + 1} of {len(items)}")
 
     with st.container(border=True):
         badges = st.container(horizontal=True)
@@ -356,10 +434,12 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
         if comments:
             first = comments[0]
             text = (first.get("text") or "").strip()
-            author = _md(first.get("author") or "")
-            body = (_md(text[:400] + ("..." if len(text) > 400 else "")) if text
-                    else ":gray[only the link, no text]")
-            st.markdown(f"**Original Slack message:** {author}: {body}")
+            if text:
+                quote = _md(text[:400] + ("..." if len(text) > 400 else ""))
+                body = f'{_md(first.get("author") or "")}: "{quote}"'
+            else:
+                body = "*(No message)*"
+            st.markdown(f"**Original Slack message:** {body}")
 
         frozen = locked or bool(p.get("zotero_key"))
         if st.session_state.get("editing_url") == p["url"] and not frozen:
@@ -487,13 +567,7 @@ def step_scan(job: scan.Job | None) -> None:
     if shown_review:
         st.caption("Could not be identified, or probably not a source. "
                    "Only items marked Correct or Edited are uploaded.")
-        view = st.radio("Review view", ["Cards", "Table"], horizontal=True,
-                        label_visibility="collapsed", key="review_view")
-        if view == "Cards":
-            review_cards(job, shown_review, locked)
-        else:
-            _table(shown_review, f"t_review_{suffix}", review=True,
-                   show_status=uploaded_any, locked=locked)
+        review_section(job, shown_review, locked)
 
     if existing:
         with st.expander(f"Already in Zotero ({len(existing)})"):

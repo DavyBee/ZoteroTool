@@ -427,6 +427,15 @@ class Job:
                     p["include"] = decision in ("correct", "edited")
                     return
 
+    def edit(self, url: str, fields: dict) -> None:
+        """Change a Review item's details without deciding on it yet."""
+        with self.lock:
+            for p in self.papers:
+                if p["url"] == url and p.get("bucket") == REVIEW:
+                    p.update(fields)
+                    p["was_edited"] = True
+                    return
+
     def selected(self) -> list[dict]:
         with self.lock:
             return [p for p in self.papers

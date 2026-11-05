@@ -189,7 +189,7 @@ def _junk(job):
 def test_review_card_correct_adds_the_item_to_the_upload():
     job = _scanned_job()
     at = _page()
-    assert "1 of 1 · 1 left to review" in _text(at)
+    assert "1 of 1" in _text(at)
     _buttons(at)["Correct"].click().run()
     assert _junk(job)["decision"] == "correct" and _junk(job)["include"]
     assert "Upload 2 to Zotero" in _buttons(at)
@@ -208,7 +208,7 @@ def test_review_card_remove_leaves_the_item_out_and_can_be_undone():
     assert "Removed (1)" in [e.label for e in at.expander]
     _buttons(at)["Undo"].click().run()
     assert "decision" not in _junk(job)
-    assert "1 of 1 · 1 left to review" in _text(at)
+    assert "1 of 1" in _text(at)
 
 
 def test_review_card_edit_saves_the_fields_and_uploads():
@@ -265,5 +265,34 @@ def test_card_shows_only_the_original_slack_message():
     junk["comments"] = [{"author": "Lorae", "ts": "1", "text": "", "is_reply": False},
                         {"author": "Ben", "ts": "2", "text": "agreed", "is_reply": True}]
     text = _text(_page())
-    assert "**Original Slack message:** Lorae: :gray[only the link, no text]" in text
+    assert "**Original Slack message:** *(No message)*" in text
     assert "agreed" not in text and "replies" not in text
+
+
+def test_card_quotes_a_real_slack_message():
+    job = _scanned_job()
+    _junk(job)["comments"] = [{"author": "Ana", "ts": "1", "text": "Worth a read", "is_reply": False}]
+    assert '**Original Slack message:** Ana: "Worth a read"' in _text(_page())
+
+
+def test_review_sections_are_collapsible_lists():
+    _scanned_job()
+    at = _page()
+    assert "Left to review (1)" in [e.label for e in at.expander]
+    _buttons(at)["Remove"].click().run()
+    labels = [e.label for e in at.expander]
+    assert "Left to review (0)" in labels and "Removed (1)" in labels
+
+
+def test_review_table_edits_upload_and_remove():
+    import app as page
+    job = _scanned_job()
+    url = _junk(job)["url"]
+    page.apply_review_edits(job, [url], {0: {"Title": "Fixed Title", "Year": "2021"}})
+    p = _junk(job)
+    assert (p["title"], p["year"], p.get("decision")) == ("Fixed Title", "2021", None)
+    page.apply_review_edits(job, [url], {0: {"Upload": True}})
+    assert p["decision"] == "edited" and p["include"]
+    job.decide(url, None)
+    page.apply_review_edits(job, [url], {0: {"Remove": True}})
+    assert p["decision"] == "removed" and not p["include"]
