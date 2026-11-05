@@ -42,7 +42,7 @@ The app runs on Streamlit Community Cloud from this repository.
 
 ## Maintenance
 
-Package versions are pinned in `requirements.txt`. Dependabot checks for updates every Sunday morning. Minor updates merge on their own once the tests pass; major updates wait for review.
+Package versions are pinned in `requirements.txt`. Dependabot checks for updates every Sunday morning and merges them on its own once the tests pass. An update that fails the tests stays open as a pull request.
 
 A monthly GitHub check confirms the outside services the app relies on still respond as expected. It emails the repository owner only if something fails.
 
