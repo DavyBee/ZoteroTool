@@ -284,15 +284,23 @@ def test_review_sections_are_collapsible_lists():
     assert "Left to review (0)" in labels and "Removed (1)" in labels
 
 
-def test_review_table_edits_upload_and_remove():
+def test_review_table_marks_and_removes_selected_rows():
     import app as page
     job = _scanned_job()
-    url = _junk(job)["url"]
-    page.apply_review_edits(job, [url], {0: {"Title": "Fixed Title", "Year": "2021"}})
     p = _junk(job)
-    assert (p["title"], p["year"], p.get("decision")) == ("Fixed Title", "2021", None)
-    page.apply_review_edits(job, [url], {0: {"Upload": True}})
-    assert p["decision"] == "edited" and p["include"]
-    job.decide(url, None)
-    page.apply_review_edits(job, [url], {0: {"Remove": True}})
-    assert p["decision"] == "removed" and not p["include"]
+    page.mark_for_upload(job, [p])
+    assert p["decision"] == "correct" and p["include"]
+    job.decide(p["url"], None)
+    job.edit(p["url"], {"title": "Fixed"})
+    page.mark_for_upload(job, [p])
+    assert p["decision"] == "edited"
+
+
+def test_review_table_view_has_action_buttons():
+    _scanned_job()
+    at = _page()
+    at.radio(key="review_view").set_value("Table").run()
+    buttons = _buttons(at)
+    assert not at.exception
+    assert buttons["Mark for upload"].disabled and buttons["Remove"].disabled
+    assert buttons["Edit"].disabled                     # nothing selected yet

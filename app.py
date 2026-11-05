@@ -287,6 +287,7 @@ def _go_to(url: str) -> None:
 def _decide(job: scan.Job, items: list[dict], i: int, decision: str,
             fields: dict | None = None) -> None:
     job.decide(items[i]["url"], decision, fields)
+    _bump_table()
     # Move on to the next item without a decision, if there is one.
     later = [q for q in items[i + 1:] + items[:i] if not q.get("decision")]
     _go_to(later[0]["url"] if later else items[i]["url"])
@@ -310,7 +311,7 @@ def review_section(job: scan.Job, items: list[dict], locked: bool) -> None:
             if view == "Cards":
                 _card(job, undecided, locked)
             else:
-                _review_editor(job, undecided, locked)
+                _review_table(job, undecided, locked)
     _decided_table("Marked for upload", marked, job, locked, "exp_marked")
     _decided_table("Removed", removed, job, locked, "exp_removed")
 
@@ -340,63 +341,60 @@ def _decided_table(label: str, items: list[dict], job: scan.Job, locked: bool,
                 st.rerun()
 
 
-def _review_editor(job: scan.Job, items: list[dict], locked: bool) -> None:
-    """Undecided Review items as an editable table: tick Upload or Remove,
-    or change the details in place."""
-    rows = [{"Upload": False, "Remove": False, "Link": p["url"],
-             "Reason": p.get("reason", ""),
-             "Title": p.get("title") or p.get("slack_file_name") or "",
-             "Authors": "; ".join(p.get("authors") or []),
-             "Year": p.get("year") or "", "Journal": p.get("journal") or "",
-             "Summary": p.get("summary") or ""} for p in items]
-    # A new key after every change, so ticks can't carry over to other rows
-    # as decided items leave the table.
-    key = f"t_left_{st.session_state.get('left_version', 0)}"
-    st.data_editor(
-        rows, key=key, hide_index=True,
-        disabled=["Link", "Reason", "Summary"] if not locked else list(rows[0]),
-        column_config={
-            "Upload": st.column_config.CheckboxColumn(width=70),
-            "Remove": st.column_config.CheckboxColumn(width=70),
-            "Link": st.column_config.LinkColumn(display_text="Open", width=50),
-            "Reason": st.column_config.TextColumn(width=160),
-            "Title": st.column_config.TextColumn(width="medium"),
-            "Authors": st.column_config.TextColumn(width=160, help="Last, First; Last, First"),
-            "Year": st.column_config.TextColumn(width=60),
-            "Journal": st.column_config.TextColumn(width=140),
-            "Summary": st.column_config.TextColumn(width=200),
-        },
-        on_change=_on_review_edit, args=(key, [p["url"] for p in items]),
-    )
-
-
-def _on_review_edit(key: str, urls: list[str]) -> None:
-    job = scan.current_job()
-    if job is not None:
-        apply_review_edits(job, urls, st.session_state[key]["edited_rows"])
+def _bump_table() -> None:
+    """New table key after a change, so a selection can't move to other rows
+    as decided items leave the table."""
     st.session_state.left_version = st.session_state.get("left_version", 0) + 1
 
 
-def apply_review_edits(job: scan.Job, urls: list[str], edited_rows: dict) -> None:
-    """Apply the review table's changes: edited details, then Upload or Remove."""
-    for row, change in edited_rows.items():
-        url = urls[int(row)]
-        fields = {}
-        if "Title" in change:
-            fields["title"] = change["Title"].strip() or None
-        if "Authors" in change:
-            fields["authors"] = [a.strip() for a in change["Authors"].split(";") if a.strip()]
-        if "Year" in change:
-            fields["year"] = change["Year"].strip() or None
-        if "Journal" in change:
-            fields["journal"] = change["Journal"].strip() or None
-        if fields:
-            job.edit(url, fields)
-        paper = next((p for p in job.papers if p["url"] == url), {})
-        if change.get("Remove"):
-            job.decide(url, "removed")
-        elif change.get("Upload"):
-            job.decide(url, "edited" if paper.get("was_edited") else "correct")
+def _review_table(job: scan.Job, items: list[dict], locked: bool) -> None:
+    """Undecided Review items as a table: select rows, then act on them."""
+    rows = [{"Link": p["url"], "Reason": p.get("reason", ""),
+             "Title": p.get("title") or p.get("slack_file_name") or "",
+             "Authors": _short_authors(p.get("authors") or []),
+             "Year": p.get("year") or "", "Journal": p.get("journal") or "",
+             "Summary": p.get("summary") or ""} for p in items]
+    event = st.dataframe(
+        rows, key=f"t_left_{st.session_state.get('left_version', 0)}", hide_index=True,
+        on_select="rerun", selection_mode="multi-row",
+        column_config={
+            "Link": st.column_config.LinkColumn(display_text="Open", width=50),
+            "Reason": st.column_config.TextColumn(width=160),
+            "Title": st.column_config.TextColumn(width="medium"),
+            "Authors": st.column_config.TextColumn(width=150),
+            "Year": st.column_config.TextColumn(width=50),
+            "Journal": st.column_config.TextColumn(width=130),
+            "Summary": st.column_config.TextColumn(width=200),
+        })
+    chosen = [items[i] for i in event.selection.rows if i < len(items)]
+    n = len(chosen)
+
+    editing = st.session_state.get("editing_url")
+    if editing in [p["url"] for p in items] and not locked:
+        _edit_form(job, items, [p["url"] for p in items].index(editing))
+        return
+
+    st.caption("Select rows, then choose an action.")
+    bar = st.container(horizontal=True)
+    if bar.button(f"Mark for upload ({n})" if n else "Mark for upload", type="primary",
+                  disabled=locked or not n, key="table_mark"):
+        mark_for_upload(job, chosen)
+        _bump_table()
+        st.rerun()
+    if bar.button("Edit", disabled=locked or n != 1, key="table_edit"):
+        st.session_state.editing_url = chosen[0]["url"]
+        st.rerun()
+    if bar.button(f"Remove ({n})" if n else "Remove", disabled=locked or not n,
+                  key="table_remove"):
+        for p in chosen:
+            job.decide(p["url"], "removed")
+        _bump_table()
+        st.rerun()
+
+
+def mark_for_upload(job: scan.Job, items: list[dict]) -> None:
+    for p in items:
+        job.decide(p["url"], "edited" if p.get("was_edited") else "correct")
 
 
 def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
@@ -422,14 +420,16 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
                 st.badge(_DECISION_LABELS[p["decision"]], color="green")
             if p.get("zotero_key"):
                 st.badge("Uploaded", color="blue")
-        _field("Title", p.get("title") or p.get("slack_file_name"))
-        _field("Authors", _all_authors(p.get("authors") or []))
-        _field("Year", p.get("year"))
-        _field("Website" if p.get("item_type") == "webpage" else "Journal",
-               p.get("journal") or (scan.site_name(p["url"])
-                                    if p.get("item_type") == "webpage" else None))
-        st.markdown(f"**Link:** [{_md(_short_link(p['url']))}]({p['url']})")
-        _field("Link summary", p.get("summary"))
+        lines = [
+            _field("Title", p.get("title") or p.get("slack_file_name")),
+            _field("Authors", _all_authors(p.get("authors") or [])),
+            _field("Year", p.get("year")),
+            _field("Website" if p.get("item_type") == "webpage" else "Journal",
+                   p.get("journal") or (scan.site_name(p["url"])
+                                        if p.get("item_type") == "webpage" else None)),
+            f"**Link:** [{_md(_short_link(p['url']))}]({p['url']})",
+            _field("Link summary", p.get("summary")),
+        ]
         comments = p.get("comments") or []
         if comments:
             first = comments[0]
@@ -439,7 +439,9 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
                 body = f'{_md(first.get("author") or "")}: "{quote}"'
             else:
                 body = "*(No message)*"
-            st.markdown(f"**Original Slack message:** {body}")
+            lines.append(f"**Original Slack message:** {body}")
+        # One block with line breaks keeps the card compact.
+        st.markdown("  \n".join(lines))
 
         frozen = locked or bool(p.get("zotero_key"))
         if st.session_state.get("editing_url") == p["url"] and not frozen:
@@ -455,9 +457,9 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
             _decide(job, items, i, "removed")
 
 
-def _field(label: str, value) -> None:
+def _field(label: str, value) -> str:
     shown = _md(str(value)) if value else ":gray[Not found]"
-    st.markdown(f"**{label}:** {shown}")
+    return f"**{label}:** {shown}"
 
 
 def _all_authors(authors: list[str]) -> str:
