@@ -272,3 +272,31 @@ def test_normalize_url_lowercases_scheme_and_host_only():
 ])
 def test_is_tweet_url(url, tweet):
     assert is_tweet_url(url) is tweet
+
+
+def test_upload_reports_each_item_and_sends_notes_in_one_request(monkeypatch, tmp_path):
+    import zotero_client
+    pdf = tmp_path / "a.pdf"
+    pdf.write_bytes(b"%PDF-1.4 test")
+    attached = []
+    monkeypatch.setattr(zotero_client, "attach_file_with_retry",
+                        lambda zot, key, path, name: attached.append(key))
+
+    class Zot(FakeZotero):
+        calls = 0
+
+        def create_items(self, items):
+            Zot.calls += 1
+            return super().create_items(items)
+
+    comment = [{"ts": "1", "author": "A", "text": "x", "is_reply": False}]
+    papers = [{"url": f"https://a.org/{i}", "title": f"P{i}", "comments": comment}
+              for i in range(3)]
+    papers[1]["local_pdf_path"] = str(pdf)
+    progress, lines = [], []
+    result = zotero_client.upload_papers(papers, Zot(), progress_cb=lambda d, t: progress.append((d, t)),
+                                         log_cb=lines.append)
+    assert progress == [(1, 3), (2, 3), (3, 3)]
+    assert Zot.calls == 2                         # the items, then all three notes
+    assert result["notes_added"] == 3 and len(attached) == 1
+    assert [l.split()[0] for l in lines] == ["Uploaded"] * 3

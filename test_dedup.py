@@ -206,7 +206,7 @@ def test_items_added_to_zotero_after_the_scan_are_skipped_on_upload():
     job.start()
     _wait(job, (scan.SCANNED,))
     sent = []
-    job.start_upload(lambda: None, upload=lambda ps, zot, progress_cb: (
+    job.start_upload(lambda: None, upload=lambda ps, zot, **kw: (
         sent.extend(ps) or {"uploaded": len(ps), "failed": 0, "errors": []}))
     _wait(job, (scan.DONE,))
     assert [p["url"] for p in sent] == ["https://a.org/0"]

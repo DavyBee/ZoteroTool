@@ -122,49 +122,89 @@ def upload_papers(
     papers: list[Paper],
     zot: zotero.Zotero,
     progress_cb: Optional[Callable[[int, int], None]] = None,
+    log_cb: Optional[Callable[[str], None]] = None,
 ) -> dict:
     """
-    Upload papers to Zotero in batches of BATCH_SIZE.
+    Upload papers to Zotero, BATCH_SIZE at a time: one request creates the
+    items, one more adds their Slack notes, then files are attached one by one.
+    progress_cb(done, total) and log_cb(line) are called as each item finishes,
+    so progress shows from the first few seconds.
 
     Sets paper["zotero_key"] on each item created and paper["upload_error"]
     on each one Zotero rejects. Attachment and note failures don't fail the
     item; they are listed in the returned errors.
 
     Returns:
-        {total, uploaded, pdfs_attached, failed, errors: [(url, msg), ...]}
+        {total, uploaded, pdfs_attached, notes_added, failed, errors: [(url, msg), ...]}
     """
     total = len(papers)
     n_ok = n_fail = n_pdf = n_notes = 0
     errors: list[tuple[str, str]] = []
+    done = 0
+
+    def finished(paper: Paper, status: str) -> None:
+        nonlocal done
+        done += 1
+        if progress_cb:
+            progress_cb(done, total)
+        if log_cb:
+            log_cb(f"{status:10}{paper.get('title') or paper['url']}")
 
     for batch_start in range(0, total, BATCH_SIZE):
         batch = papers[batch_start : batch_start + BATCH_SIZE]
-        items = [paper_to_zotero_item(p) for p in batch]
 
         try:
-            resp = _create_items(zot, items)
+            resp = _create_items(zot, [paper_to_zotero_item(p) for p in batch])
         except Exception as exc:
-            # Whole batch failed (network error, auth failure, etc.). The page
-            # offers "Retry failed" for these.
+            # Network or authentication failure. "Retry failed" on the page
+            # sends these again.
             msg = f"batch upload failed: {exc}"
             for p in batch:
                 errors.append((p["url"], msg))
                 p["upload_error"] = msg
-            n_fail += len(batch)
+                n_fail += 1
+                finished(p, "Failed")
             continue
 
-        for idx_str, item_data in resp.get("successful", {}).items():
+        for idx_str, err_data in resp.get("failed", {}).items():
             paper = batch[int(idx_str)]
-            zotero_key = item_data["data"]["key"]
-            paper["zotero_key"] = zotero_key
+            msg = err_data.get("message") or "unknown error"
+            errors.append((paper["url"], f"upload failed: {msg}"))
+            paper["upload_error"] = msg
+            n_fail += 1
+            finished(paper, "Failed")
+
+        created = []
+        for idx_str, item_data in sorted(resp.get("successful", {}).items(),
+                                         key=lambda kv: int(kv[0])):
+            paper = batch[int(idx_str)]
+            paper["zotero_key"] = item_data["data"]["key"]
+            created.append(paper)
             n_ok += 1
 
-            # Attach the downloaded file, if there is one.
+        # The Slack notes for the whole batch, in one request. A note failure
+        # doesn't fail its item, which is already in Zotero.
+        with_notes = [p for p in created if p.get("comments")]
+        if with_notes:
+            notes = [{"itemType": "note", "parentItem": p["zotero_key"],
+                      "note": _comments_to_note_html(p["comments"])} for p in with_notes]
+            try:
+                note_resp = _create_items(zot, notes)
+                n_notes += len(note_resp.get("successful", {}))
+                for idx_str, err in note_resp.get("failed", {}).items():
+                    errors.append((with_notes[int(idx_str)]["url"],
+                                   f"note upload failed: {err.get('message')}"))
+            except Exception as exc:
+                for p in with_notes:
+                    errors.append((p["url"], f"note upload failed: {exc}"))
+
+        # Files, one at a time. An item is finished once its file is attached.
+        for paper in created:
             if paper.get("local_pdf_path"):
                 local_pdf = pdf_storage.ensure_local_pdf(paper)
                 if local_pdf:
                     try:
-                        attach_file_with_retry(zot, zotero_key, local_pdf,
+                        attach_file_with_retry(zot, paper["zotero_key"], local_pdf,
                                                _file_name(paper, local_pdf))
                         n_pdf += 1
                     except Exception as exc:
@@ -173,33 +213,7 @@ def upload_papers(
                     errors.append((paper["url"],
                                    "pdf_attach skipped: the downloaded file is gone "
                                    "(the app restarted); item uploaded without it"))
-
-            # Attach the Slack post and replies as a
-            # child note. Non-fatal: the parent is already uploaded, so a note
-            # failure is recorded but doesn't fail the paper.
-            comments = paper.get("comments") or []
-            if comments:
-                note = {"itemType": "note",
-                        "note": _comments_to_note_html(comments),
-                        "parentItem": zotero_key}
-                try:
-                    _create_items(zot, [note])
-                    n_notes += 1
-                except Exception as exc:
-                    errors.append((paper["url"], f"note upload failed: {exc}"))
-
-        for idx_str, err_data in resp.get("failed", {}).items():
-            paper = batch[int(idx_str)]
-            msg = err_data.get("message") or "unknown error"
-            errors.append((paper["url"], f"upload failed: {msg}"))
-            # Stamp the per-item rejection onto the paper so it leaves Ready and
-            # shows in the Upload tab's fixable error list (vs whole-batch network
-            # failures above, which are transient and left to auto-retry).
-            paper["upload_error"] = msg
-            n_fail += 1
-
-        if progress_cb:
-            progress_cb(min(batch_start + BATCH_SIZE, total), total)
+            finished(paper, "Uploaded")
 
     return {
         "total":         total,

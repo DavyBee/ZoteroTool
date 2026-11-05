@@ -405,6 +405,7 @@ class Job:
             self.phase = UPLOADING
             self.step = "Checking Zotero" if self._refresh_index else "Uploading"
             self.total, self.done = len(papers), 0
+            self.log.clear()
         if upload is None:
             import zotero_client
             upload = zotero_client.upload_papers
@@ -437,9 +438,13 @@ class Job:
         def progress(done: int, total: int) -> None:
             with self.lock:
                 self.done = done
+
+        def log(line: str) -> None:
+            with self.lock:
+                self.log.append(line)
         papers = self._recheck(papers)
         try:
-            result = upload(papers, make_client(), progress_cb=progress) if papers \
+            result = upload(papers, make_client(), progress_cb=progress, log_cb=log) if papers \
                 else {"uploaded": 0, "failed": 0, "errors": []}
         except Exception as exc:
             result = {"uploaded": 0, "failed": len(papers),
