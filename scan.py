@@ -495,6 +495,12 @@ class Job:
                 p.setdefault("upload_error", str(exc))
         with self.lock:
             self.upload_result = result
+            # Ready items left unchecked wait in Review, to be uploaded or
+            # removed later.
+            for p in self.papers:
+                if (p.get("bucket") == READY and not p.get("include")
+                        and not p.get("zotero_key")):
+                    p["bucket"], p["reason"] = REVIEW, "Left out of upload"
             self.phase = DONE
 
     # Status ----------------------------------------------------------------

@@ -8,9 +8,9 @@ This app adds the papers and links shared in the Eviction Lab's literature Slack
 2. Click **Search for sources**. The app reads every link and uploaded document and looks up its title, authors, year, and journal. A few months of messages take a minute or two.
 3. Check the results, which are sorted into three groups:
    - **Ready**: metadata was found. These are selected for upload. Clear the box on any you want to leave out.
-   - **Review**: the app couldn't identify these, or they probably aren't sources. Each row gives the reason. Nothing here is uploaded unless you select it.
+   - **Review**: the app couldn't identify these, or they probably aren't sources. They are shown one at a time with the reason. Mark each **Correct**, **Edit** its details, or **Remove** it. Only items marked Correct or edited are uploaded.
    - **Already in Zotero**: these are skipped. The table shows what matched (DOI, URL, or title) and links to the existing item.
-4. Click **Upload to Zotero**. The results stay on the page afterwards, with each item's status. You can select more items and upload again.
+4. Click **Upload to Zotero**. If anything is being left out, the app asks first. Unchecked Ready items then wait in Review, where you can still upload or remove them.
 
 Each uploaded item gets its metadata, the PDF when one could be downloaded, and a note with the Slack post and its replies. Tweets and other web pages are saved as web page items with their link. When both a working paper and its published version are shared, they are kept as separate items, and the working paper's title ends with "(working paper)". Nothing else is added to the library.
 
@@ -26,6 +26,7 @@ The search runs on the server, so refreshing the page or closing the tab doesn't
 | Slack file could not be downloaded | The file's download link in the export has expired. |
 | PDF has no readable text | A PDF was found but its text couldn't be read. |
 | No metadata found | No lookup recognized the link. |
+| Left out of upload | It was unchecked in Ready when the rest were uploaded. |
 | Not searched, Error during search | The search was stopped or hit an error before reaching this item. Searching again usually fixes it. |
 
 ## Hosting

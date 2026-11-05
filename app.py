@@ -294,22 +294,31 @@ def _decide(job: scan.Job, items: list[dict], i: int, decision: str,
 
 
 def review_cards(job: scan.Job, all_items: list[dict], locked: bool) -> None:
-    items = [q for q in all_items if q.get("decision") != "removed"]
+    undecided = [q for q in all_items if not q.get("decision")]
+    marked = [q for q in all_items if q.get("decision") in ("correct", "edited")]
     removed = [q for q in all_items if q.get("decision") == "removed"]
-    if items:
-        _card(job, items, locked)
+    if undecided:
+        _card(job, undecided, locked)
     else:
-        st.caption("Nothing left to review.")
-    if removed:
-        with st.expander(f"Removed ({len(removed)})"):
-            for q in removed:
-                c1, c2 = st.columns([6, 1], vertical_alignment="center")
-                c1.write(q.get("title") or q.get("slack_file_name") or q["url"])
-                if c2.button("Undo", key=f"undo_{zlib.crc32(q['url'].encode())}",
-                             disabled=locked):
-                    job.decide(q["url"], None)
-                    _go_to(q["url"])
-                    st.rerun()
+        st.caption("All items reviewed.")
+    _decided_list("Marked for upload", marked, job, locked)
+    _decided_list("Removed", removed, job, locked)
+
+
+def _decided_list(label: str, items: list[dict], job: scan.Job, locked: bool) -> None:
+    """A collapsed list of decided items, each with Undo to send it back."""
+    if not items:
+        return
+    with st.expander(f"{label} ({len(items)})"):
+        for q in items:
+            c1, c2 = st.columns([6, 1], vertical_alignment="center")
+            c1.write(q.get("title") or q.get("slack_file_name") or q["url"])
+            frozen = locked or bool(q.get("zotero_key"))
+            if c2.button("Undo", key=f"undo_{zlib.crc32(q['url'].encode())}",
+                         disabled=frozen):
+                job.decide(q["url"], None)
+                _go_to(q["url"])
+                st.rerun()
 
 
 def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
@@ -318,7 +327,6 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
     i = urls.index(current) if current in urls else 0
     p = items[i]
 
-    decided = sum(1 for q in items if q.get("decision"))
     nav = st.container(horizontal=True, vertical_alignment="center")
     if nav.button("Previous", disabled=i == 0, key="card_prev"):
         _go_to(urls[i - 1])
@@ -326,7 +334,7 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
     if nav.button("Next", disabled=i == len(items) - 1, key="card_next"):
         _go_to(urls[i + 1])
         st.rerun()
-    nav.caption(f"{i + 1} of {len(items)} · {decided} decided")
+    nav.caption(f"{i + 1} of {len(items)} · {len(items)} left to review")
 
     with st.container(border=True):
         badges = st.container(horizontal=True)
@@ -552,8 +560,12 @@ def step_upload(job: scan.Job | None) -> None:
         label = "Retry failed" if failed and n_selected == len(failed) else \
             f"Upload {n_selected} to Zotero"
         if st.button(label, type="primary", disabled=not zotero_ready()):
-            job.start_upload(zotero_client.make_zotero_client)
-            st.rerun()
+            unchecked, unmarked = _left_out(job)
+            if unchecked or unmarked:
+                confirm_upload(job, n_selected, unchecked, unmarked)
+            else:
+                job.start_upload(zotero_client.make_zotero_client)
+                st.rerun()
     elif not has_uploaded:
         st.caption("Nothing selected to upload.")
 
@@ -562,6 +574,32 @@ def step_upload(job: scan.Job | None) -> None:
                      key="new_search"):
             clear_job()
             st.rerun()
+
+
+def _left_out(job: scan.Job) -> tuple[int, int]:
+    """(unchecked Ready items, Review items not marked for upload), not
+    counting anything already uploaded or removed."""
+    ready = [p for p in job.items(scan.READY) if not p.get("zotero_key")]
+    review = [p for p in job.items(scan.REVIEW)
+              if not p.get("zotero_key") and p.get("decision") != "removed"]
+    return (sum(1 for p in ready if not p.get("include")),
+            sum(1 for p in review if not p.get("include")))
+
+
+@st.dialog("Upload to Zotero")
+def confirm_upload(job: scan.Job, n: int, unchecked: int, unmarked: int) -> None:
+    st.write(f"Upload {n} {'item' if n == 1 else 'items'} to Zotero?")
+    if unchecked:
+        st.write(f"{unchecked} unchecked in Ready won't be uploaded.")
+    if unmarked:
+        st.write(f"{unmarked} in Review {'isn' if unmarked == 1 else 'aren'}'t "
+                 "marked for upload.")
+    row = st.container(horizontal=True)
+    if row.button("Upload", type="primary", key="confirm_upload"):
+        job.start_upload(zotero_client.make_zotero_client)
+        st.rerun()
+    if row.button("Cancel", key="cancel_upload"):
+        st.rerun()
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────

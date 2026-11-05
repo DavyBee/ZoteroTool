@@ -368,3 +368,15 @@ def test_web_page_without_a_site_name_gets_its_domain():
     q = {"url": "https://a.org/x", "title": "T", "item_type": "journalArticle"}
     scan._prepare_for_upload(q)
     assert "journal" not in q
+
+
+def test_unchecked_ready_items_wait_in_review_after_an_upload():
+    job = scan.Job(_papers(2), None, title_search=lambda *a: None,
+                   enrich=lambda p, *a: {"metadata_source": "translator", "title": p["url"]})
+    job.start()
+    _wait(job, scan.SCANNED)
+    job.set_include("https://a.org/1", False)
+    job.start_upload(lambda: FakeZotero())
+    _wait(job, scan.DONE)
+    left = next(p for p in job.papers if p["url"] == "https://a.org/1")
+    assert (left["bucket"], left["reason"]) == (scan.REVIEW, "Left out of upload")

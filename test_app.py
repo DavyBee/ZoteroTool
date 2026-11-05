@@ -189,10 +189,12 @@ def _junk(job):
 def test_review_card_correct_adds_the_item_to_the_upload():
     job = _scanned_job()
     at = _page()
-    assert "1 of 1 · 0 decided" in _text(at)
+    assert "1 of 1 · 1 left to review" in _text(at)
     _buttons(at)["Correct"].click().run()
     assert _junk(job)["decision"] == "correct" and _junk(job)["include"]
     assert "Upload 2 to Zotero" in _buttons(at)
+    assert "All items reviewed." in _text(at)
+    assert "Marked for upload (1)" in [e.label for e in at.expander]
 
 
 def test_review_card_remove_leaves_the_item_out_and_can_be_undone():
@@ -202,10 +204,11 @@ def test_review_card_remove_leaves_the_item_out_and_can_be_undone():
     _buttons(at)["Remove"].click().run()
     assert _junk(job)["decision"] == "removed" and not _junk(job)["include"]
     assert "Upload 1 to Zotero" in _buttons(at)
-    assert "Nothing left to review." in _text(at)
+    assert "All items reviewed." in _text(at)
+    assert "Removed (1)" in [e.label for e in at.expander]
     _buttons(at)["Undo"].click().run()
     assert "decision" not in _junk(job)
-    assert "1 of 1 · 0 decided" in _text(at)
+    assert "1 of 1 · 1 left to review" in _text(at)
 
 
 def test_review_card_edit_saves_the_fields_and_uploads():
@@ -230,3 +233,27 @@ def test_review_table_view_is_still_available():
     at.radio(key="review_view").set_value("Table").run()
     assert not at.exception
     assert "Correct" not in _buttons(at)
+
+
+# ── Confirming an upload ──────────────────────────────────────────────────────
+
+def test_upload_asks_first_when_items_are_left_out():
+    job = _scanned_job()                    # 1 ready, 1 review item not marked
+    at = _page()
+    _buttons(at)["Upload 1 to Zotero"].click().run()
+    text = " ".join(m.value for m in at.markdown)
+    assert "Upload 1 item to Zotero?" in text
+    assert "1 in Review isn't marked for upload." in text
+    assert job.snapshot()["phase"] == scan.SCANNED        # nothing uploaded yet
+    _buttons(at)["Cancel"].click().run()
+    assert job.snapshot()["phase"] == scan.SCANNED
+
+
+def test_upload_goes_straight_through_when_nothing_is_left_out(monkeypatch):
+    job = _scanned_job()
+    job.decide(_junk(job)["url"], "removed")
+    started = []
+    monkeypatch.setattr(job, "start_upload", lambda make: started.append(True))
+    at = _page()
+    _buttons(at)["Upload 1 to Zotero"].click().run()
+    assert started == [True]
