@@ -1,0 +1,39 @@
+# Monthly check that the outside services the app depends on still behave the
+# way the code expects, and that the app's Python version isn't close to its
+# end of life. GitHub emails the repository owner only when this fails.
+#
+# The "newest-python" job runs the tests on the newest Python release. If it
+# fails, the pinned packages or the code won't work on newer Python yet, which
+# matters because Streamlit Cloud moves apps off a Python version when it
+# reaches end of life.
+name: Monthly check
+
+on:
+  schedule:
+    - cron: "0 10 1 * *"     # the 1st of each month, 10:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version-file: .python-version
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q -m live
+
+  newest-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q

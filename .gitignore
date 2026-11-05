@@ -4,14 +4,8 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 
-data/
 pdfs/
-tests/
-pdfs_to_upload/
 state/
-zotero_database.json
-zotero_database.db
-*.db
 its_lit_copy-DB
 .vscode
 *.md
@@ -19,3 +13,5 @@ its_lit_copy-DB
 *.json
 *.jsonl*
 __pycache__
+.streamlit/secrets.toml
+.test-data/

@@ -1,43 +1,34 @@
 """
-metadata.py — Fetch bibliographic metadata for a Paper.
+metadata.py — Find bibliographic metadata for one source.
 
-The cascade, in order, stops at the first success:
-    1. CrossRef DOI   — direct DOI lookup, when a DOI is already known
-                        (authoritative, and polite to Citoid for the common case)
-    2. Citoid         — Wikimedia's hosted Zotero-translator service over plain
-                        HTTPS (no Docker); returns Zotero-native items for
-                        accessible landing pages
-    3. LLM (Claude)   — fetches the page and asks for structured JSON
+enrich_paper tries these in order and stops at the first that works:
+    1. CrossRef, when the link or Slack post already gives a DOI
+    2. SSRN links: the DOI follows from the abstract id
+    3. citation_* tags on the page (the Google Scholar convention)
+    4. Citoid, Wikimedia's hosted copy of Zotero's translators
+    5. Claude, reading the page or PDF
 
-Citoid runs the same translator engine that powers Zotero's browser connector
-and produces output already in Zotero's native schema — no field-mapping
-translation needed — but as a hosted, free service it has no SLA, so it sits
-behind CrossRef (for DOIs) and ahead of the Claude fallback (for everything it
-can't resolve: DOIs it misses, bot-blocked publishers, paywalls). This replaces
-the old self-hosted zotero/translation-server (Docker); no local server is run.
-
-Citoid requests are throttled and per-URL cached within a run (see _citoid_get)
-to respect Wikimedia's REST usage policy.
-
-Public entry point: enrich_paper(paper, anthropic_key, audit_log_path).
-LLM calls are appended to llm_audit.jsonl regardless of success.
+Steps 1-4 are free and give the same answer every time. Every Claude request
+and response is appended to state/llm_audit.jsonl.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Optional
-from urllib.parse import quote as url_quote
+from html.parser import HTMLParser
+from urllib.parse import parse_qsl, quote as url_quote, urlsplit
 from urllib.request import Request, urlopen
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 import config
 import http_fetch
-from database import Comment
-from pdf_storage import save_pdf, save_slack_file, copy_to_upload_queue
+from records import Comment
+from pdf_storage import save_pdf, save_slack_file
 
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────────
@@ -58,29 +49,14 @@ def _http_get_json(url: str) -> Optional[dict]:
 
 
 def _fetch_page_text(url: str) -> tuple[str, str]:
-    """
-    Best-effort fetch of a URL's content for the LLM stage. Returns
-    `(text, state)`:
-      - text  — HTML tags stripped (first config.LLM_PAGE_TEXT_CHARS chars), or
-                PDF text extracted via pypdf; "" when there's no extractable
-                text (e.g. an image).
-      - state — one of:
-          "ok"      we got a 2xx — we actually saw the page (even if no text
-                    came out of it, e.g. an image).
-          "dead"    HTTP 404/410 — the server is alive and says the resource is
-                    gone. The ONLY reliable "dead page" signal.
-          "blocked" everything else (403/429/5xx, or a network/DNS/timeout
-                    error): we didn't see the page and can't tell whether it's
-                    permanently gone, so we treat it as a block.
-    The cascade uses `state` to route a metadata-less result: "ok" → sort by the
-    LLM's category (Links/Junk); "dead" non-papers → Likely junk; "blocked" (and
-    anything still paper-shaped) → Access issues.
-
-    Fetching goes through http_fetch.fetch — browser impersonation via
-    curl_cffi when available — which is what gets us real content from the
-    fingerprint-gated publisher CDNs that 403 a plain request. Hosts running a
-    full JS challenge still return nothing here, so the paper falls to the
-    manual "Access issues" path, same as before.
+    """The page's text for the AI step, and whether the page could be read.
+    Returns (text, state):
+      text   HTML with tags removed, or text extracted from a PDF, cut to
+             config.LLM_PAGE_TEXT_CHARS; "" if there is none.
+      state  "ok"      the page loaded (even if it had no text)
+             "dead"    404 or 410: the page is gone
+             "blocked" anything else (403, 429, 5xx, network error). We can't
+                       tell whether the page still exists.
     """
     raw, content_type, status = http_fetch.fetch(url, max_bytes=500_000)
     if raw is None:
@@ -95,19 +71,227 @@ def _fetch_page_text(url: str) -> tuple[str, str]:
     if "application/pdf" in content_type or url.lower().endswith(".pdf"):
         text = _extract_pdf_text(raw)
         return (text[:config.LLM_PAGE_TEXT_CHARS] if text.strip()
-                else "[PDF — text not extracted]"), "ok"
+                else "[PDF; text not extracted]"), "ok"
 
     return "", "ok"             # reachable (2xx) but no extractable text
 
 
+# ── Citation tags on the page ─────────────────────────────────────────────────
+# Publishers mark up article pages with Highwire Press "citation_*" meta tags
+# (citation_title, citation_author, citation_doi, ...). Google Scholar's
+# inclusion guidelines are built on them, so publishers keep them current; they
+# are a long-standing convention, not something specific to one site.
+# https://scholar.google.com/intl/en/scholar/inclusion.html#indexing
+
+class _MetaTagParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.tags: dict[str, list[str]] = {}
+
+    def handle_starttag(self, tag, attrs):
+        if tag != "meta":
+            return
+        a = {k.lower(): (v or "") for k, v in attrs}
+        name = (a.get("name") or a.get("property") or "").strip().lower()
+        content = " ".join(a.get("content", "").split())
+        if name.startswith("citation_") and content:
+            self.tags.setdefault(name, []).append(content)
+
+
+class _TitleParser(HTMLParser):
+    """The page's og:title, else its <title>."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.og_title = ""
+        self.title = ""
+        self._in_title = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "title":
+            self._in_title = True
+        elif tag == "meta":
+            a = {k.lower(): (v or "") for k, v in attrs}
+            if (a.get("property") or a.get("name") or "").lower() == "og:title":
+                self.og_title = self.og_title or " ".join(a.get("content", "").split())
+
+    def handle_endtag(self, tag):
+        if tag == "title":
+            self._in_title = False
+
+    def handle_data(self, data):
+        if self._in_title and not self.title:
+            self.title = " ".join(data.split())
+
+
+def page_title(url: str) -> Optional[str]:
+    """The title a web page gives itself, for saving it as a link. Uses the
+    copy already fetched during the scan."""
+    raw, content_type, _status = http_fetch.fetch(url, max_bytes=2_000_000)
+    if raw is None or "html" not in (content_type or "").lower():
+        return None
+    parser = _TitleParser()
+    try:
+        parser.feed(raw.decode("utf-8", errors="replace"))
+    except Exception:
+        pass
+    return (parser.og_title or parser.title or None)
+
+
+def _is_site_name(title: str, url: str) -> bool:
+    """True when a page title is just the site's name ("OSF" on osf.io,
+    "Spotify" on open.spotify.com), which happens on pages built by JavaScript."""
+    host = urlsplit(url).netloc.lower().replace("-", "").replace(".", "")
+    words = re.findall(r"[a-z0-9]+", title.lower())
+    return not words or all(w in host for w in words)
+
+
+def _link_title(url: str, summary: Optional[str]) -> str:
+    """Title for a web page saved as a link: its own title, unless that is just
+    the site's name; then the AI's one-line description; then the URL."""
+    title = page_title(url)
+    if title and not _is_site_name(title, url):
+        return title
+    if summary:
+        return summary.strip().rstrip(".")
+    return title or url
+
+
+def _is_slack_message(url: str) -> bool:
+    parts = urlsplit(url)
+    host = parts.netloc.lower()
+    return (host == "slack.com" or host.endswith(".slack.com")) \
+        and parts.path.startswith("/archives/")
+
+
+def parse_citation_tags(html_bytes: bytes) -> dict[str, list[str]]:
+    parser = _MetaTagParser()
+    try:
+        parser.feed(html_bytes.decode("utf-8", errors="replace"))
+        parser.close()
+    except Exception:
+        pass
+    return parser.tags
+
+
+_NAME_PARTICLES = {"van", "von", "de", "del", "della", "der", "den", "di", "da",
+                   "du", "la", "le", "ter", "dos", "das", "st", "st."}
+_NAME_SUFFIXES = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv"}
+
+
+def _tag_author(name: str) -> str:
+    """'Rebecca Diamond' → 'Diamond, Rebecca'; 'Clément de Chaisemartin' →
+    'de Chaisemartin, Clément'. Names already in 'Last, First' form are kept."""
+    name = " ".join(name.split())
+    if "," in name or " " not in name:
+        return name
+    parts = name.split()
+    suffix = parts.pop() if parts[-1].lower() in _NAME_SUFFIXES and len(parts) > 2 else ""
+    i = len(parts) - 1
+    while i > 1 and parts[i - 1].lower() in _NAME_PARTICLES:
+        i -= 1
+    first = " ".join(parts[:i] + ([suffix] if suffix else []))
+    return f"{' '.join(parts[i:])}, {first}"
+
+
+def tags_to_fields(tags: dict[str, list[str]]) -> Optional[dict]:
+    """Bibliographic fields from citation tags, or None unless the page names
+    both a title and at least one author."""
+    def one(*names):
+        for n in names:
+            if tags.get(n):
+                return tags[n][0]
+        return None
+
+    title = one("citation_title")
+    authors = [_tag_author(a) for a in tags.get("citation_author", []) if a.strip()]
+    if not title or not authors:
+        return None
+    if tags.get("citation_arxiv_id"):
+        item_type, venue = "preprint", "arXiv"
+    elif one("citation_technical_report_institution", "citation_technical_report_number"):
+        item_type, venue = "report", one("citation_technical_report_institution")
+    elif one("citation_journal_title"):
+        item_type, venue = "journalArticle", one("citation_journal_title")
+    elif one("citation_conference_title"):
+        item_type, venue = "conferencePaper", one("citation_conference_title")
+    elif one("citation_dissertation_institution"):
+        item_type, venue = "thesis", one("citation_dissertation_institution")
+    elif one("citation_inbook_title", "citation_book_title"):
+        item_type, venue = "bookSection", one("citation_inbook_title", "citation_book_title")
+    else:
+        item_type, venue = "webpage", None
+    first, last = one("citation_firstpage"), one("citation_lastpage")
+    date = one("citation_publication_date", "citation_date", "citation_online_date",
+               "citation_cover_date", "citation_year")
+    year = re.search(r"\b(1[5-9]\d\d|20\d\d)\b", date or "")
+    return {
+        "title": clean_title(title), "authors": authors, "item_type": item_type, "journal": venue,
+        "year": year.group(1) if year else None,
+        "volume": one("citation_volume"), "issue": one("citation_issue"),
+        "pages": f"{first}-{last}" if first and last else first,
+        "publisher": one("citation_publisher"), "isbn": one("citation_isbn"),
+        "language": one("citation_language"), "abstract": one("citation_abstract"),
+        "doi": _clean_doi(one("citation_doi")),
+    }
+
+
+def fetch_citation_metadata(url: str) -> Optional[tuple[str, dict]]:
+    """Metadata from the page's citation tags. A DOI found there goes to
+    CrossRef, and is trusted only if CrossRef's title matches the page's.
+    Returns (metadata_source, fields) or None."""
+    from zotero_index import titles_match
+    raw, content_type, _status = http_fetch.fetch(url, max_bytes=2_000_000)
+    if raw is None or "html" not in (content_type or "").lower():
+        return None
+    tags = parse_citation_tags(raw)
+    doi = _clean_doi((tags.get("citation_doi") or [None])[0])
+    if doi:
+        found = lookup_doi(doi)
+        page_title = (tags.get("citation_title") or [None])[0]
+        if found and (not page_title or titles_match(found[1].get("title"), page_title)):
+            return found
+    fields = tags_to_fields(tags)
+    return ("citation_tags", fields) if fields else None
+
+
+# ── SSRN ──────────────────────────────────────────────────────────────────────
+# SSRN blocks automated readers (Citoid included), but every SSRN paper has a
+# DOI built from its abstract id: 10.2139/ssrn.<id>. That is SSRN's own scheme.
+# The DOI is only used if CrossRef has a record for it.
+
+_SSRN_PATH_RE = re.compile(r"/abstract=(\d+)", re.I)
+
+
+def ssrn_doi(url: str) -> Optional[str]:
+    parts = urlsplit(url)
+    host = parts.netloc.lower()
+    if not (host == "ssrn.com" or host.endswith(".ssrn.com")):
+        return None
+    params = {k.lower(): v for k, v in parse_qsl(parts.query)}
+    abstract_id = params.get("abstract_id") or params.get("abstractid")
+    if not abstract_id:
+        m = _SSRN_PATH_RE.search(parts.path)
+        abstract_id = m.group(1) if m else None
+    if abstract_id and abstract_id.isdigit():
+        return f"10.2139/ssrn.{abstract_id}"
+    return None
+
+
 # ── Citoid (Wikimedia's hosted Zotero translator) ─────────────────────────────
 
-# Per-run cache (url → first Zotero item, or None) and a throttle timestamp. A
-# big export can reference the same landing page more than once, and Wikimedia's
-# REST usage policy asks callers to be polite — so we cache results for the run
-# and space requests at least config.CITOID_MIN_INTERVAL apart.
+# Results are cached per URL, and requests are spaced at least
+# config.CITOID_MIN_INTERVAL apart, as Wikimedia's API policy asks.
 _CITOID_CACHE: dict[str, Optional[dict]] = {}
 _last_citoid_call = 0.0
+# Scans enrich several papers at once; the lock makes the throttle hold across
+# threads by reserving each request's start time in turn.
+_citoid_lock = threading.Lock()
+CITOID_ATTEMPTS = 3
+# Room for models that think before answering (the reply itself is ~300 tokens).
+# Only tokens actually generated are billed.
+LLM_MAX_TOKENS = 4000
+CITOID_RETRY_WAIT = 3.0      # seconds; multiplied by the attempt number
 
 
 def _citoid_get(url: str) -> Optional[dict]:
@@ -123,67 +307,45 @@ def _citoid_get(url: str) -> Optional[dict]:
     if url in _CITOID_CACHE:
         return _CITOID_CACHE[url]
 
-    wait = config.CITOID_MIN_INTERVAL - (time.monotonic() - _last_citoid_call)
-    if wait > 0:
-        time.sleep(wait)
-
     api = config.CITOID_BASE + url_quote(url, safe="")
-    req = Request(api, headers={
-        "User-Agent": config.CITOID_USER_AGENT,
-        "Accept": "application/json",
-    })
     item: Optional[dict] = None
-    try:
-        with urlopen(req, timeout=config.HTTP_TIMEOUT) as resp:
-            data = json.loads(resp.read())
-        if isinstance(data, list) and data:
-            item = data[0]
-    except Exception:
-        item = None
-    finally:
-        _last_citoid_call = time.monotonic()
+    # Citoid is free and has no SLA: under load it answers 429/5xx or times
+    # out. Those are retried with backoff; a 404 ("no metadata") is final.
+    for attempt in range(CITOID_ATTEMPTS):
+        with _citoid_lock:
+            wait = config.CITOID_MIN_INTERVAL - (time.monotonic() - _last_citoid_call)
+            if wait > 0:
+                time.sleep(wait)
+            _last_citoid_call = time.monotonic()
+        req = Request(api, headers={
+            "User-Agent": config.CITOID_USER_AGENT,
+            "Accept": "application/json",
+        })
+        try:
+            with urlopen(req, timeout=config.HTTP_TIMEOUT) as resp:
+                data = json.loads(resp.read())
+            if isinstance(data, list) and data:
+                item = data[0]
+            break
+        except HTTPError as exc:
+            if exc.code != 429 and exc.code < 500:
+                break
+        except (URLError, TimeoutError, OSError):
+            pass
+        except Exception:
+            break
+        time.sleep(CITOID_RETRY_WAIT * (attempt + 1))
 
     _CITOID_CACHE[url] = item
     return item
 
 
 def fetch_translator(url: str) -> Optional[dict]:
-    """
-    Resolve `url` through Citoid (the hosted Zotero translator).
-
-    No publisher-specific URL rewriting is done here — if Citoid can't handle
-    the URL (e.g. it's a PDF, or a bot-blocked publisher), we let the cascade
-    fall through to the LLM. The whole point of the translator is to handle the
-    URL → metadata mapping for us; we don't want to maintain a parallel list of
-    "publisher X's URL pattern Y maps to Z."
-
-    Returns a non-junk Zotero item, or None. (Named fetch_translator for
-    continuity — its output still flows to the "translator" metadata_source.)
-    """
+    """The Zotero item Citoid returns for `url`, or None if it returns nothing
+    usable. Results are labelled metadata_source "translator"."""
     raw = _citoid_get(url)
-    if raw and not _is_translator_junk(raw):
+    if raw and not _is_translator_junk(raw, url):
         return raw
-    return None
-
-
-def fetch_webpage_metadata(url: str) -> Optional[dict]:
-    """
-    Run Citoid on a URL and return its raw extraction WITHOUT the citation-grade
-    junk filter that fetch_translator applies.
-
-    fetch_translator() rejects a title-only result because, for a paper, a
-    bare webpage is junk. But for "save this URL as whatever Zotero makes of
-    it" (the link-upload path for non-papers), that title-only webpage item is
-    exactly what we want — it's what the Zotero connector / "Save to Zotero"
-    button produces for an arbitrary page (the Embedded Metadata translator
-    reading <title> / og: tags into a webpage item).
-
-    Returns the flat fields dict (same shape as translator_to_fields), or None
-    if Citoid returned nothing usable at all.
-    """
-    raw = _citoid_get(url)
-    if raw and (raw.get("title") or "").strip():
-        return translator_to_fields(raw)
     return None
 
 
@@ -201,17 +363,12 @@ def lookup_doi(doi: str) -> Optional[tuple[str, dict]]:
     return None
 
 
-def _extract_pdf_text(pdf_bytes: bytes) -> str:
-    """
-    Pull readable text out of PDF bytes using pypdf, which handles the encodings
-    our old hand-rolled regex didn't — `TJ` arrays with kerning (what LaTeX/
-    pdfTeX emits for nearly all body text), hex strings, and ToUnicode CMaps.
-    That covers the title/abstract/body of essentially all academic PDFs.
-
-    Returns "" when nothing readable comes out — a scanned/image-only PDF, or a
-    file pypdf can't parse — which the cascade reads as "no text" and falls back
-    to the manual drag-in path.
-    """
+def _extract_pdf_text(pdf_bytes: bytes,
+                      max_chars: Optional[int] = None) -> str:
+    """The PDF's text, via pypdf, up to max_chars (config.LLM_PAGE_TEXT_CHARS
+    by default). Stops reading pages once it has that much: extracting a long
+    PDF is slow, and only the start is sent to the AI. "" for a scanned PDF or
+    one pypdf can't read; the AI step then reads the first pages as images."""
     import logging
     from io import BytesIO
     from pypdf import PdfReader
@@ -221,12 +378,20 @@ def _extract_pdf_text(pdf_bytes: bytes) -> str:
     # so silence the noise.
     logging.getLogger("pypdf").setLevel(logging.ERROR)
 
+    limit = max_chars or config.LLM_PAGE_TEXT_CHARS
     try:
         reader = PdfReader(BytesIO(pdf_bytes))
-        pages = (page.extract_text() or "" for page in reader.pages)
-        return "\n".join(p for p in pages if p).strip()
+        parts, total = [], 0
+        for page in reader.pages:
+            text = page.extract_text() or ""
+            if text:
+                parts.append(text)
+                total += len(text)
+            if total >= limit:
+                break
+        return "\n".join(parts).strip()
     except Exception:
-        # Encrypted, malformed, or otherwise unreadable — treat as no text.
+        # Encrypted or unreadable: no text.
         return ""
 
 
@@ -258,26 +423,23 @@ def _clean_doi(doi: Optional[str]) -> Optional[str]:
     """Strip trailing punctuation and validate structure; return a well-formed
     DOI or None.
 
-    A DOI is `10.<registrant>/<suffix>`. A bare registrant prefix with no
-    suffix — e.g. SSRN's `10.2139/` or OUP's `10.1093/` — is NOT a paper's
-    DOI; it identifies the *publisher*. If we store it as a DOI, every distinct
-    SSRN paper that extracts down to `10.2139/` collides in the Duplicates tab,
-    so three unrelated articles look like one work. DOI syntax is a stable
-    standard (ANSI/NISO Z39.84), so this check won't rot the way a URL-pattern
-    rule would."""
+    A DOI is `10.<registrant>/<suffix>`. A bare prefix such as `10.2139/`
+    names a publisher, not a paper, and would make unrelated papers look like
+    duplicates."""
     if not doi:
         return None
     doi = doi.strip().rstrip(".,;:)>]\"'")
     return doi if _DOI_RE.match(doi) else None
 
 
-def _is_translator_junk(raw: dict) -> bool:
+def _is_translator_junk(raw: dict, url: str = "") -> bool:
     """
-    Reject responses too thin to be a real citation. A title alone isn't
-    enough — every webpage has one. Require at least one of: an author,
-    a publication date, an abstract, or a DOI.
+    True if Citoid's result is too thin to be a citation. Every web page has a
+    title, so also require an author, a date, an abstract, or a DOI. A title
+    that is only the site's name ("- YouTube") means Citoid didn't see the page.
     """
-    if not (raw.get("title") or "").strip():
+    title = (raw.get("title") or "").strip()
+    if not title or (url and _is_site_name(title, url)):
         return True
     has_author   = bool(raw.get("creators"))
     has_year     = bool(raw.get("date"))
@@ -299,7 +461,7 @@ def translator_to_fields(raw: dict) -> dict:
     isbn = (isbn_raw[0] if isinstance(isbn_raw, list) and isbn_raw
             else isbn_raw if isinstance(isbn_raw, str) else None)
     return {
-        "title":      raw.get("title"),
+        "title":      clean_title(raw.get("title")),
         "authors":    _translator_creators(raw),
         "abstract":   raw.get("abstractNote"),
         "year":       year,
@@ -348,6 +510,37 @@ _CROSSREF_TYPE_MAP = {
 }
 
 
+def search_crossref_title(title: str, author: Optional[str] = None) -> Optional[tuple[str, dict]]:
+    """Find a work on CrossRef by its title (e.g. one typed into the lab's
+    "Post an article" Slack form), tolerating typos. A hit is only accepted
+    when its title matches, and either the typed author is among its authors
+    or, with no author typed, the title is specific (four or more words).
+    Returns lookup_doi's (source, fields) or None."""
+    from zotero_index import title_key, titles_match, _typo
+    words = (title_key(title) or "").split()
+    if not author and len(words) < 4:
+        return None
+    query = f"query.bibliographic={url_quote(title)}"
+    if author:
+        query += f"&query.author={url_quote(author)}"
+    raw = _http_get_json(f"{config.CROSSREF_BASE}?{query}&rows=5&select=DOI,title")
+    items = ((raw or {}).get("message") or {}).get("items") or [] if isinstance(raw, dict) else []
+    want = (title_key(author) or "").split()
+    for it in items:
+        found = (it.get("title") or [None])[0]
+        if not (found and it.get("DOI") and titles_match(found, title)):
+            continue
+        result = lookup_doi(it["DOI"])
+        if result is None:
+            continue
+        if want:
+            names = {w for a in result[1].get("authors") or [] for w in (title_key(a) or "").split()}
+            if not any(_typo(w, n) for w in want for n in names):
+                continue
+        return result
+    return None
+
+
 def fetch_crossref_doi(doi: str) -> Optional[dict]:
     """Direct DOI lookup. Returns the inner 'message' dict or None."""
     raw = _http_get_json(f"{config.CROSSREF_BASE}/{url_quote(doi, safe='/')}")
@@ -358,19 +551,41 @@ def crossref_to_fields(data: dict) -> dict:
     title_list = data.get("title") or []
     container  = data.get("container-title") or []
     abstract   = re.sub(r"<[^>]+>", " ", data.get("abstract") or "").strip() or None
+    item_type  = _CROSSREF_TYPE_MAP.get(data.get("type") or "", "journalArticle")
+    doi        = _clean_doi(data.get("DOI"))
+    # Where the work appeared. Without a journal name, a report or preprint is
+    # credited to its publisher (e.g. NBER); an article is left blank rather
+    # than credited to a publishing company. 10.2139 is SSRN's DOI prefix.
+    if container:
+        venue = container[0]
+    elif doi and doi.startswith("10.2139/"):
+        venue = "SSRN"
+    elif item_type in ("report", "preprint"):
+        venue = data.get("publisher")
+    else:
+        venue = None
     return {
-        "title":      title_list[0] if title_list else None,
+        "title":      clean_title(title_list[0]) if title_list else None,
         "authors":    _crossref_authors(data),
         "abstract":   abstract,
         "year":       _crossref_year(data),
-        "journal":    container[0] if container else data.get("publisher"),
-        "item_type":  _CROSSREF_TYPE_MAP.get(data.get("type") or "", "journalArticle"),
+        "journal":    venue,
+        "item_type":  item_type,
         "volume":     data.get("volume"),
         "issue":      data.get("issue"),
         "pages":      data.get("page"),
         "publisher":  data.get("publisher"),
-        "doi":        _clean_doi(data.get("DOI")),
+        "doi":        doi,
     }
+
+
+def clean_title(title: Optional[str]) -> Optional[str]:
+    """Remove HTML formatting tags (CrossRef titles can contain <i>, <sub>,
+    ...) and decode entities."""
+    if not title:
+        return title
+    import html as _html
+    return " ".join(_html.unescape(re.sub(r"<[^>]+>", "", title)).split()) or None
 
 
 def _crossref_authors(data: dict) -> list[str]:
@@ -397,9 +612,8 @@ def _crossref_year(data: dict) -> Optional[str]:
 
 _LLM_REQUIRED_KEYS = {"title", "authors", "year", "item_type"}
 
-# Below this many chars of extracted page/file text, the LLM had little to work
-# with and is effectively guessing from the URL + Slack comments — flag it so the
-# lab member verifies. The audit log shows clean extractions carry ~6k chars.
+# With less page text than this, the AI is mostly guessing from the link and the
+# Slack messages, so the item goes to Review ("Page could not be accessed").
 _LOW_CONTEXT_CHARS = 500
 
 
@@ -408,14 +622,10 @@ def fetch_llm(url: str, comments: list[Comment],
               page_text: Optional[str] = None,
               pdf_doc: Optional[bytes] = None) -> Optional[dict]:
     """
-    Ask Claude for structured metadata. By default fetches the page itself; pass
-    `page_text` to run the LLM on already-extracted content instead (e.g. a local
-    .docx's body — see enrich_local_file), in which case the content is "seen" so
-    fetch_state is "ok". Pass `pdf_doc` (raw PDF bytes) instead to have Claude read
-    the file with vision — the fallback for scanned / image-only PDFs with no text
-    layer; the caller pre-slices it to the first pages (config.LLM_VISION_PAGES).
-    Every call — prompt, response, parse, error — is appended to audit_log_path as
-    JSONL for transparency.
+    Ask Claude for the source's metadata as JSON. Fetches the page itself unless
+    given `page_text` (text already extracted, e.g. from a .docx) or `pdf_doc`
+    (the first pages of a scanned PDF, read as images). Every request and
+    response is appended to audit_log_path.
     """
     try:
         import anthropic as anthropic_sdk
@@ -450,7 +660,7 @@ def fetch_llm(url: str, comments: list[Comment],
         "cite. Do NOT return null just because other citations appear lower on "
         "the page — those are context, not the answer.\n\n"
         "summary is an ULTRA-SHORT label — 10 words MAX, a fragment not a "
-        "sentence — naming just WHAT the source is or is about, enough to cull "
+        "sentence — naming just WHAT the source is or is about, enough to judge "
         "at a glance. Examples: 'NBER working paper on rent control', "
         "'Reporter's X/Twitter profile', 'County eviction dashboard', "
         "'Brookings report on housing vouchers', 'Google Drive folder'. "
@@ -526,7 +736,7 @@ def fetch_llm(url: str, comments: list[Comment],
         client = anthropic_sdk.Anthropic(api_key=anthropic_key)
         messages = [{"role": "user", "content": content}]
         try:
-            resp = client.messages.create(model=model, max_tokens=800,
+            resp = client.messages.create(model=model, max_tokens=LLM_MAX_TOKENS,
                                            messages=messages)
         except Exception as e:
             # Model retired/deprecated (404) → self-heal: switch to a current model
@@ -537,9 +747,15 @@ def fetch_llm(url: str, comments: list[Comment],
                 raise
             audit["model"] = model = new_model
             audit["model_auto_switched"] = True
-            resp = client.messages.create(model=model, max_tokens=800,
+            resp = client.messages.create(model=model, max_tokens=LLM_MAX_TOKENS,
                                            messages=messages)
-        raw_text = resp.content[0].text
+        # Read the answer by block type: newer models put a thinking block
+        # first, so content[0] is not necessarily the text.
+        raw_text = "".join(getattr(b, "text", "") for b in resp.content
+                           if getattr(b, "type", "") == "text")
+        if not raw_text.strip():
+            audit["error"] = f"no text in response (stop_reason={resp.stop_reason})"
+            return None
         audit["response"] = raw_text
         # Some models (notably Haiku) emit valid JSON followed by explanatory
         # prose ("Note: ..."). Pull just the first balanced JSON object.
@@ -549,14 +765,12 @@ def fetch_llm(url: str, comments: list[Comment],
             audit["error"] = "schema validation failed"
             return None
         audit["parsed"] = parsed
-        # Pass through even null-title responses — the cascade interprets
-        # "structurally valid + null title" via `category` + whether we actually
-        # saw the page, routing to Links / Likely junk / Access issues rather
-        # than treating it as an error.
+        # A valid reply with no title is not an error: enrich_paper uses the
+        # category and whether the page loaded to pick the Review reason.
         fields = _llm_to_fields(parsed)
         fields["_fetch_state"] = fetch_state
-        # Vision read the actual pages — not thin context, even though there's no
-        # page_text. Otherwise flag thin text so review can scrutinise it.
+        # Little page text means the AI was mostly guessing (unless it read a
+        # scanned PDF's pages as images).
         fields["_low_context"] = (pdf_doc is None
             and len((page_text or "").strip()) < _LOW_CONTEXT_CHARS)
         return fields
@@ -584,15 +798,9 @@ def _is_model_unavailable(e: Exception) -> bool:
 
 
 def _auto_heal_model(anthropic_key: str, current_model: str) -> Optional[str]:
-    """The configured model was retired (404). Pick the best currently-available
-    replacement from the live Models API and persist it (config.set_llm_model), so
-    an unmaintained deploy keeps working with no human in the loop — and the switch
-    sticks for every later call and across restarts.
-
-    Preference: newest Haiku-tier (matches today's cheap/fast/vision-capable
-    choice), else newest Sonnet, else newest Opus, else the newest Claude model.
-    Returns the chosen id, or None if no replacement could be resolved (no models
-    API, offline) — in which case the caller surfaces the original 404."""
+    """The configured model was retired (404). Switch to the newest Haiku, else
+    the newest Sonnet, else Opus, from the live list of models. Returns the new
+    model id, or None if none could be found."""
     try:
         import anthropic as anthropic_sdk
         models = anthropic_sdk.Anthropic(api_key=anthropic_key).models.list(
@@ -649,17 +857,12 @@ def _extract_json_object(text: str) -> str:
                 depth -= 1
                 if depth == 0:
                     return text[start:i + 1]
-    return text  # unbalanced — let json.loads fail
+    return text  # unbalanced; json.loads will fail
 
 
 def _is_valid_llm_response(parsed) -> bool:
-    """
-    Schema-shape check only — does NOT require title to be set. A null-title
-    response from a structurally valid call is the LLM's way of saying "I
-    couldn't pull a citation"; the cascade then uses `category` and whether we
-    saw the page to route it to Links / Likely junk / Access issues, rather than
-    treating it as an error.
-    """
+    """Checks the reply's shape only. The title may be null: that means the
+    AI found nothing citable, which enrich_paper handles."""
     if not isinstance(parsed, dict):
         return False
     return _LLM_REQUIRED_KEYS.issubset(parsed.keys())
@@ -667,11 +870,8 @@ def _is_valid_llm_response(parsed) -> bool:
 
 def _is_useful_partial(out: dict) -> bool:
     """
-    Decide whether a title-less LLM result is worth keeping as `metadata_source
-    = "llm"` instead of marking the paper a non_paper. The bar is intentionally
-    high: weak partials (year-only, journal-only, year+journal-only) are
-    closer to noise than to signal — there are thousands of articles in any
-    given (journal, year), so they can't uniquely identify a publication.
+    Whether an AI result with no title still identifies the work. A year or a
+    journal alone doesn't: thousands of articles share them.
 
     A useful partial requires:
       - a DOI (Zotero will resolve it to full metadata on upload), OR
@@ -688,7 +888,7 @@ def _llm_to_fields(d: dict) -> dict:
     # not a Paper field we persist. enrich_paper pops it (and _fetch_state) out
     # before merging.
     return {
-        "title":        d.get("title"),
+        "title":        clean_title(d.get("title")),
         "authors":      d.get("authors") or [],
         "abstract":     d.get("abstract"),
         "year":         str(d["year"]) if d.get("year") else None,
@@ -723,20 +923,25 @@ def enrich_paper(paper: dict, anthropic_key: Optional[str] = None,
         "last_error":          None,
     }
 
-    # A tweet is just a plain link — never enrich it for its own metadata. The
-    # paper a tweet points to is recovered separately (expand_tweets); the tweet
-    # itself stays a bare bookmark in the Links tab, so it can't masquerade as a
-    # citable work or collide with that paper in the Duplicates tab.
-    from url_expander import is_tweet_url
+    # A tweet is saved as a plain link; it has no bibliographic metadata.
+    from slack_parser import is_tweet_url, tweet_date, tweet_title
     if is_tweet_url(url):
         fields["metadata_source"] = "link"
         fields["item_type"] = "webpage"
+        fields["title"] = tweet_title(url)
+        day = tweet_date(url)
+        if day:
+            fields["year"] = str(day.year)
         return fields
 
-    # 0. Slack file upload (the url is a Slack permalink, not a web page). Download
-    #    the file via its url_private and read it with the LLM — handled here so it
-    #    rides the normal Enrich run, no separate step. Expired token → needs_manual
-    #    with the permalink so the lab member can grab it from Slack by hand.
+    # A link to another Slack message is a reference within Slack, not a source.
+    if _is_slack_message(url):
+        fields["metadata_source"] = "non_paper"
+        fields["summary"] = "Link to a Slack message"
+        return fields
+
+    # A file uploaded to Slack: download it and have the AI read it. The
+    #    download link in an export expires, so older exports often fail here.
     slack_url = paper.get("slack_file_url")
     if slack_url:
         path = paper.get("local_pdf_path")
@@ -750,40 +955,22 @@ def enrich_paper(paper: dict, anthropic_key: Optional[str] = None,
             path, size = got
             fields["local_pdf_path"] = path
             fields["pdf_size_bytes"] = size
-            # Over the durable-storage cap: the file is on this session's disk
-            # but NOT in the pdf_blobs table, so it won't survive a cloud
-            # restart. Flagged so the UI can say so; ensure_local_pdf
-            # re-downloads it just-in-time when it's needed for upload/export.
-            fields["pdf_too_large"] = size > config.PDF_BLOB_MAX_BYTES or None
         if anthropic_key:
             fields.update(enrich_local_file(path, url, paper.get("comments") or [],
                                             anthropic_key, audit_log_path))
         else:
             fields["metadata_source"] = "pdf_saved"
-        if fields.get("metadata_source") == "pdf_saved":
-            copy_to_upload_queue(path)
         return fields
 
-    # Metadata and the PDF are fetched independently and we keep both outcomes.
-    # The best case is full metadata WITH the PDF attached on upload (publisher
-    # landing pages often have both citation_* meta tags AND a citation_pdf_url),
-    # so the lab member never has to run Zotero's desktop "Retrieve Metadata for
-    # PDF" feature (which is unreliable — Zotero's PDF recognizer fails on PDFs
-    # whose first-page text or DOI isn't well-indexed by recognize.zotero.org,
-    # even when the same paper's browser-connector path would work). save_pdf
-    # runs first and regardless of which metadata stage wins, so a CrossRef or
-    # Citoid hit still gets the file attached.
+    # Look for a PDF first, whichever step ends up supplying the metadata, so
+    # the file can be attached on upload.
     pdf_result = save_pdf(url)
     if pdf_result is not None:
         path, size = pdf_result
         fields["local_pdf_path"] = path
         fields["pdf_size_bytes"] = size
-        # See the Slack branch above: over the 25 MB durable cap → disk-only
-        # this session, re-downloaded on demand at upload/export time.
-        fields["pdf_too_large"] = size > config.PDF_BLOB_MAX_BYTES or None
 
-    # 1. CrossRef, if we already have a DOI (from Slack). Authoritative for DOIs,
-    #    and keeps the common case off the free, SLA-less Citoid service.
+    # 1. CrossRef, if the link or Slack post already gives a DOI.
     if doi:
         result = lookup_doi(doi)
         if result:
@@ -792,54 +979,60 @@ def enrich_paper(paper: dict, anthropic_key: Optional[str] = None,
             fields["metadata_source"] = source
             return fields
 
-    # 2. Citoid — Wikimedia's hosted Zotero translator — on the URL.
+    # 2. SSRN: the DOI follows from the abstract id (SSRN blocks page reads).
+    if not doi:
+        guessed = ssrn_doi(url)
+        result = lookup_doi(guessed) if guessed else None
+        if result:
+            source, data = result
+            _merge_truthy(fields, data)
+            fields["metadata_source"] = source
+            return fields
+
+    # 3. Citation tags on the page.
+    result = fetch_citation_metadata(url)
+    if result:
+        source, data = result
+        _merge_truthy(fields, data)
+        fields["metadata_source"] = source
+        return fields
+
+    # 4. Citoid.
     raw = fetch_translator(url)
     if raw:
         _merge_truthy(fields, translator_to_fields(raw))
         fields["metadata_source"] = "translator"
         return fields
 
-    # PDF saved but NO metadata yet. Read the PDF with the LLM (better than
-    # Zotero's recognizer for non-indexed working papers/reports, and the API
-    # upload keeps the Slack notes + attaches the PDF). Drag-in ("pdf_saved") is
-    # only the fallback — when the PDF has no extractable text (scanned) or there's
-    # no API key.
+    # A PDF but no metadata yet: have the AI read the PDF.
     if pdf_result is not None:
         if anthropic_key:
             fields.update(enrich_local_file(path, url, paper.get("comments") or [],
                                             anthropic_key, audit_log_path))
         else:
             fields["metadata_source"] = "pdf_saved"
-        if fields.get("metadata_source") == "pdf_saved":
-            copy_to_upload_queue(path)
         return fields
 
-    # 3. LLM fallback
+    # 5. The AI reads the page.
     if anthropic_key:
         out = fetch_llm(url, paper.get("comments") or [],
                         anthropic_key, audit_log_path)
         if out is None:
-            # API/parse failure — set error so the paper can be retried later
+            # API or parse failure; see state/llm_audit.jsonl
             fields["last_error"] = "llm: API call failed (see state/llm_audit.jsonl)"
         else:
-            # Routing-only hints — never persisted as Paper fields.
+            # Used below to sort the result; not kept on the record.
             category = out.pop("category", "paper")
             fetch_state = out.pop("_fetch_state", "blocked")
 
-            # The LLM's one-line read + its paper/link/junk guess — persisted
-            # everywhere it ran (at-a-glance aids for culling the Links /
-            # Likely-junk / Access-issues queues, where we often have no title).
-            # Set before the routing branches below.
+            # The AI's one-line description, shown in Review.
             if out.get("summary"):
                 fields["summary"] = str(out["summary"]).strip()
             fields["llm_category"] = category
             fields["low_context"] = bool(out.pop("_low_context", False))
 
-            # 3a. If the LLM produced a NEW DOI (one we didn't already try
-            #     against CrossRef above), route it through the same identifier
-            #     lookup before accepting raw LLM data. CrossRef output is more
-            #     reliable, and resolving the DOI is a free hallucination check —
-            #     a DOI that doesn't resolve there is suspect.
+            # 5a. A DOI from the AI is checked against CrossRef; if CrossRef has
+            #     it, CrossRef's metadata is used instead of the AI's.
             llm_doi = out.get("doi")
             if llm_doi and llm_doi != doi:
                 result = lookup_doi(llm_doi)
@@ -849,31 +1042,27 @@ def enrich_paper(paper: dict, anthropic_key: Optional[str] = None,
                     fields["metadata_source"] = source
                     return fields
 
-            # 3b. Citable metadata extracted → "llm" (Ready after review).
-            #     A useful partial counts: DOI present (Zotero resolves it at
-            #     upload), OR authors+year+journal all present (manually
-            #     findable later). Weaker partials fall through to 3c.
+            # 5b. A title, or enough else to identify the work (a DOI, or
+            #     authors + year + journal).
             if out.get("title") or _is_useful_partial(out):
                 _merge_truthy(fields, out)
                 fields["metadata_source"] = "llm"
                 return fields
 
-            # 3c. No citable metadata. Sort the residue by what we saw plus the
-            #     LLM's category:
-            #       saw it (ok) + clutter        → "non_paper"   (Likely junk)
-            #       saw it (ok) + worth keeping  → "link"        (Links)
-            #       dead (404/410) + non-paper   → "non_paper"   (Likely junk)
-            #       everything else              → "needs_manual" (Access issues)
-            #     "Everything else" = a citable work we couldn't retrieve, a
-            #     blocked page (403/429/5xx/network — we can't tell if it's gone),
-            #     or a dead URL the LLM still reads as a paper (might be findable
-            #     by hand). A junk/link verdict is only trusted when we saw the
-            #     page; a "dead" page is auto-junked ONLY when it isn't a paper,
-            #     so a moved-but-real paper is never bulk-deleted.
+            # 5c. Nothing citable. What it was decides the Review reason:
+            #     page loaded and not worth keeping   → non_paper ("Likely not a source")
+            #     page loaded, a link worth keeping   → link (uploaded as a web page)
+            #     page gone (404/410) and not a paper → non_paper
+            #     anything else                       → needs_manual ("Page could not
+            #                                            be accessed")
+            #     A dead page that looks like a paper stays needs_manual: it may
+            #     have moved.
             if fetch_state == "ok" and category == "junk":
                 fields["metadata_source"] = "non_paper"
             elif fetch_state == "ok" and category == "link":
                 fields["metadata_source"] = "link"
+                fields["item_type"] = "webpage"
+                fields["title"] = _link_title(url, fields.get("summary"))
             elif fetch_state == "dead" and category != "paper":
                 fields["metadata_source"] = "non_paper"
             else:
@@ -898,15 +1087,11 @@ def _merge_truthy(target: dict, source: dict) -> None:
 
 
 # ── Local file (PDF / .docx) metadata via the LLM ─────────────────────────────
-# Preferred over Zotero's desktop recognizer for PDF-only papers: the recognizer
-# (recognize.zotero.org) comes back bare for working papers / reports / preprints,
-# and the drag-in path it requires can't attach the Slack notes. Reading the
-# file's text with the LLM gives better metadata for those AND lets us upload via
-# the API (PDF attached + notes). Drag-in (pdf_saved) stays as a fallback.
+# For a PDF with no other metadata (and for Slack uploads), the AI reads the
+# file itself. If that fails too, the item is "pdf_saved" and goes to Review.
 
 def _extract_docx_text(path: str) -> str:
-    """Pull the body text out of a .docx (stdlib zipfile — no dependency), with
-    paragraph breaks preserved. Returns "" if it isn't a readable docx."""
+    """The body text of a .docx, with paragraph breaks. "" if unreadable."""
     import zipfile
     try:
         with zipfile.ZipFile(path) as z:
@@ -943,12 +1128,11 @@ def enrich_local_file(file_path: str, url: str, comments: list[Comment],
     Returns the fields to merge into the paper:
       - title (or useful partial) found → metadata_source "llm" + the metadata
       - otherwise (no key, unreadable/scanned, or nothing extracted) → "pdf_saved",
-        falling back to the manual drag-in path (the file is on disk either way).
+        which goes to Review (the file is still attached if it is uploaded).
     Routing-only hints (category / _fetch_state) are dropped; summary is kept.
 
-    A PDF with no usable text layer (scanned / image-only — under
-    _LOW_CONTEXT_CHARS of extracted text) falls back to Claude vision on its first
-    config.LLM_VISION_PAGES pages instead of sending the near-empty text."""
+    A scanned PDF (under _LOW_CONTEXT_CHARS of text) is sent as images of its
+    first config.LLM_VISION_PAGES pages instead."""
     text = _extract_file_text(file_path)
     out = None
     if anthropic_key:
@@ -978,5 +1162,5 @@ def enrich_local_file(file_path: str, url: str, comments: list[Comment],
             return fields
         if out.get("summary"):
             fields["summary"] = out["summary"]
-    fields["metadata_source"] = "pdf_saved"        # fall back to manual drag-in
+    fields["metadata_source"] = "pdf_saved"
     return fields
