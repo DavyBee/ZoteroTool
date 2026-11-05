@@ -429,3 +429,11 @@ def test_saved_results_load_as_a_finished_search_without_lookups():
     _wait(loaded, scan.SCANNED)
     assert [p["bucket"] for p in loaded.papers] == [scan.READY] * 3
     scan._current = None
+
+
+def test_html_entities_are_cleaned_from_journals_and_authors():
+    p = {"title": "Rent &amp; Eviction", "journal": "City &amp; Community",
+         "authors": ["O&#39;Brien, Ann"], "item_type": "journalArticle", "year": "2024"}
+    scan._tidy(p)
+    assert (p["title"], p["journal"], p["authors"]) == \
+        ("Rent & Eviction", "City & Community", ["O'Brien, Ann"])

@@ -278,7 +278,27 @@ def _decide(job: scan.Job, items: list[dict], i: int, decision: str,
     # Move on to the next item without a decision, if there is one.
     later = [q for q in items[i + 1:] + items[:i] if not q.get("decision")]
     _go_to(later[0]["url"] if later else items[i]["url"])
-    st.rerun()
+
+
+def _stop_editing() -> None:
+    st.session_state.pop("editing_url", None)
+
+
+def _start_editing(url: str) -> None:
+    st.session_state.editing_url = url
+
+
+def _save_card(job: scan.Job, p: dict) -> None:
+    k = zlib.crc32(p["url"].encode())
+    get = lambda name: (st.session_state.get(f"edit_{name}_{k}") or "").strip()
+    job.edit(p["url"], {
+        "title": get("title") or None,
+        "authors": [a.strip() for a in get("authors").split(";") if a.strip()],
+        "year": get("year") or None,
+        "item_type": st.session_state.get(f"edit_type_{k}") or p.get("item_type"),
+        "journal": get("journal") or None})
+    _bump_table()
+    _stop_editing()
 
 
 def review_section(job: scan.Job, items: list[dict], locked: bool) -> None:
@@ -365,48 +385,49 @@ def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
     changes = st.session_state.get(key, {}).get("edited_rows", {})
     bar = st.container(horizontal=True)
     if any(set(c) - {"Select"} for c in changes.values()):
-        if bar.button("Save edits", type="primary", key=f"{name}_save"):
-            apply_review_edits(job, urls, changes)
-            _bump_table()
-            st.rerun()
-        if bar.button("Cancel", key=f"{name}_cancel"):
-            _bump_table()
-            st.rerun()
+        bar.button("Save edits", type="primary", key=f"{name}_save",
+                   on_click=_save_table, args=(job, urls, key))
+        bar.button("Cancel", key=f"{name}_cancel", on_click=_bump_table)
         return
     chosen = [items[int(r)] for r, c in changes.items()
               if c.get("Select") and int(r) < len(items)
               and not items[int(r)].get("zotero_key")]
     n = len(chosen)
 
-    def act(label: str, primary: bool = False) -> bool:
-        return bar.button(f"{label} ({n})" if n else label,
-                          type="primary" if primary else "secondary",
-                          disabled=locked or not n, key=f"{name}_{label}")
+    def act(label: str, action: str, primary: bool = False) -> None:
+        bar.button(f"{label} ({n})" if n else label,
+                   type="primary" if primary else "secondary",
+                   disabled=locked or not n, key=f"{name}_{label}",
+                   on_click=table_action, args=(job, action, chosen))
 
     if mode == "decided":
-        if act("Undo"):
-            for p in chosen:
-                job.decide(p["url"], None)
-            _done()
+        act("Undo", "undo")
         return
     if mode == "ready":
-        if act("Move to Review"):
-            for p in chosen:
-                job.move_to_review(p["url"])
-            _done()
-    elif act("Mark ready for upload", primary=True):
-        mark_for_upload(job, chosen)
-        _done()
-    if act("Remove"):
-        for p in chosen:
+        act("Move to Review", "move")
+    else:
+        act("Mark ready for upload", "mark", primary=True)
+    act("Remove", "remove")
+
+
+def table_action(job: scan.Job, action: str, items: list[dict]) -> None:
+    """Apply a table button to the ticked rows."""
+    for p in items:
+        if action == "undo":
+            job.decide(p["url"], None)
+        elif action == "move":
+            job.move_to_review(p["url"])
+        elif action == "mark":
+            mark_for_upload(job, [p])
+        elif action == "remove":
             job.move_to_review(p["url"])          # a Ready item joins Review first
             job.decide(p["url"], "removed")
-        _done()
-
-
-def _done() -> None:
     _bump_table()
-    st.rerun()
+
+
+def _save_table(job: scan.Job, urls: list[str], key: str) -> None:
+    apply_review_edits(job, urls, st.session_state[key]["edited_rows"])
+    _bump_table()
 
 
 def apply_review_edits(job: scan.Job, urls: list[str], edited_rows: dict) -> None:
@@ -437,12 +458,10 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
     p = items[i]
 
     nav = st.container(horizontal=True, vertical_alignment="center")
-    if nav.button("Previous", disabled=i == 0, key="card_prev"):
-        _go_to(urls[i - 1])
-        st.rerun()
-    if nav.button("Next", disabled=i == len(items) - 1, key="card_next"):
-        _go_to(urls[i + 1])
-        st.rerun()
+    nav.button("Previous", disabled=i == 0, key="card_prev",
+               on_click=_go_to, args=(urls[max(i - 1, 0)],))
+    nav.button("Next", disabled=i == len(items) - 1, key="card_next",
+               on_click=_go_to, args=(urls[min(i + 1, len(urls) - 1)],))
     nav.caption(f"{i + 1} of {len(items)}")
 
     with st.container(border=True):
@@ -456,7 +475,7 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
         frozen = locked or bool(p.get("zotero_key"))
         editing = st.session_state.get("editing_url") == p["url"] and not frozen
         if editing:
-            fields = _edit_fields(p)
+            _edit_fields(p)
             lines = []
         else:
             lines = [
@@ -484,23 +503,17 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
 
         actions = st.container(horizontal=True)
         if editing:
-            if actions.button("Save edits", type="primary", key="card_save"):
-                job.edit(p["url"], fields)
-                _bump_table()
-                st.session_state.pop("editing_url", None)
-                st.rerun()
-            if actions.button("Cancel", key="card_cancel"):
-                st.session_state.pop("editing_url", None)
-                st.rerun()
+            actions.button("Save edits", type="primary", key="card_save",
+                           on_click=_save_card, args=(job, p))
+            actions.button("Cancel", key="card_cancel", on_click=_stop_editing)
             return
-        if actions.button("Mark ready for upload", type="primary", disabled=frozen,
-                          key="card_correct"):
-            _decide(job, items, i, "edited" if p.get("was_edited") else "correct")
-        if actions.button("Edit", disabled=frozen, key="card_edit"):
-            st.session_state.editing_url = p["url"]
-            st.rerun()
-        if actions.button("Remove", disabled=frozen, key="card_remove"):
-            _decide(job, items, i, "removed")
+        actions.button("Mark ready for upload", type="primary", disabled=frozen,
+                       key="card_correct", on_click=_decide,
+                       args=(job, items, i, "edited" if p.get("was_edited") else "correct"))
+        actions.button("Edit", disabled=frozen, key="card_edit",
+                       on_click=_start_editing, args=(p["url"],))
+        actions.button("Remove", disabled=frozen, key="card_remove",
+                       on_click=_decide, args=(job, items, i, "removed"))
 
 
 def _edit_fields(p: dict) -> dict:

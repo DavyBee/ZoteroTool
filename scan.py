@@ -568,8 +568,11 @@ def _tidy(p: dict) -> None:
     """Clean the title, whichever lookup produced it (HTML tags such as <br>
     turn up in titles). An "article" with no authors, no year, and no DOI is
     usually a journal homepage or issue page; save it as a web page."""
-    if p.get("title"):
-        p["title"] = metadata.clean_title(p["title"])
+    for field in ("title", "journal", "publisher"):    # also "&amp;" and the like
+        if p.get(field):
+            p[field] = metadata.clean_title(p[field])
+    if p.get("authors"):
+        p["authors"] = [metadata.clean_title(a) or a for a in p["authors"]]
     if p.get("item_type") in ("journalArticle", "preprint", "conferencePaper") \
             and not p.get("authors") and not p.get("year") and not doi_key(p.get("doi")):
         p["item_type"] = "webpage"
