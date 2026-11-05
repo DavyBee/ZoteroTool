@@ -8,7 +8,7 @@ This app adds the papers and links shared in the Eviction Lab's literature Slack
 2. Click **Search for sources**. The app reads every link and uploaded document and looks up its title, authors, year, and journal. A few months of messages take a minute or two.
 3. Check the results, which are sorted into three groups:
    - **Ready**: metadata was found. These are selected for upload. Clear the box on any you want to leave out.
-   - **Review**: the app couldn't identify these, or they probably aren't sources. They are shown one at a time with the reason. Mark each **Correct**, **Edit** its details in place, or **Remove** it. The Table view does the same for several items at once; edits there are kept when you press **Save**. Only items marked Correct or edited are uploaded.
+   - **Review**: the app couldn't identify these, or they probably aren't sources. They are shown one at a time with the reason. Choose **Mark ready for upload**, **Edit** its details in place, or **Remove** for each. The Table view does the same for several items at once; edits there are kept when you press **Save edits**. Only items marked ready for upload are uploaded.
    - **Already in Zotero**: these are skipped. The table shows what matched (DOI, URL, or title) and links to the existing item.
 4. Click **Upload to Zotero**. If anything is being left out, the app asks first. Unchecked Ready items then wait in Review, where you can still upload or remove them.
 

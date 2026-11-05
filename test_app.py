@@ -98,7 +98,7 @@ def test_finished_scan_keeps_every_step_on_the_page():
     text = _text(at)
     assert "Done · export.zip" in text
     assert "1 ready · 1 review · 0 already in Zotero" in text
-    assert "**Ready (1)**" in text and "**Review (1)**" in text
+    assert "Ready (1)" in [e.label for e in at.expander] and "**Review (1)**" in text
     assert "Upload 1 to Zotero" in _buttons(at)
 
 
@@ -175,9 +175,9 @@ def test_search_filters_the_results():
     at = _page()
     at.text_input(key="results_query").input("paper").run()
     text = _text(at)
-    assert "**Ready (1)**" in text and "**Review (0 of 1)**" in text
+    assert "Ready (1)" in [e.label for e in at.expander] and "**Review (0 of 1)**" in text
     at.text_input(key="results_query").input("nothing matches this").run()
-    assert "**Ready (0 of 1)**" in _text(at)
+    assert "Ready (0 of 1)" in [e.label for e in at.expander]
 
 
 # ── Review cards ──────────────────────────────────────────────────────────────
@@ -190,7 +190,7 @@ def test_review_card_correct_adds_the_item_to_the_upload():
     job = _scanned_job()
     at = _page()
     assert "1 of 1" in _text(at)
-    _buttons(at)["Correct"].click().run()
+    _buttons(at)["Mark ready for upload"].click().run()
     assert _junk(job)["decision"] == "correct" and _junk(job)["include"]
     assert "Upload 2 to Zotero" in _buttons(at)
     assert "All items reviewed." in _text(at)
@@ -218,12 +218,12 @@ def test_review_card_edit_saves_the_fields_and_uploads():
     at.text_input(key=f"edit_title_{k}").input("The Real Title")
     at.text_input(key=f"edit_authors_{k}").input("Doe, Jane; Roe, Rich")
     at.text_input(key=f"edit_year_{k}").input("2023")
-    _buttons(at)["Save"].click().run()
+    _buttons(at)["Save edits"].click().run()
     p = _junk(job)
     assert (p["title"], p["authors"], p["year"]) == \
         ("The Real Title", ["Doe, Jane", "Roe, Rich"], "2023")
-    assert "decision" not in p and "Correct" in _buttons(at)   # back to the card
-    _buttons(at)["Correct"].click().run()
+    assert "decision" not in p and "Mark ready for upload" in _buttons(at)   # back to the card
+    _buttons(at)["Mark ready for upload"].click().run()
     assert p["decision"] == "edited"
     assert p["include"] and "Upload 2 to Zotero" in _buttons(at)
 
@@ -233,7 +233,7 @@ def test_review_table_view_is_still_available():
     at = _page()
     at.radio(key="review_view").set_value("Table").run()
     assert not at.exception
-    assert "Correct" not in _buttons(at)
+    assert "card_correct" not in [b.key for b in at.button]
 
 
 # ── Confirming an upload ──────────────────────────────────────────────────────
@@ -303,7 +303,7 @@ def test_review_table_view_has_action_buttons():
     at.radio(key="review_view").set_value("Table").run()
     buttons = _buttons(at)
     assert not at.exception
-    assert buttons["Mark for upload"].disabled and buttons["Remove"].disabled
+    assert buttons["Mark ready for upload"].disabled and buttons["Remove"].disabled
     assert "Edit" not in buttons                        # edited in the table
 
 

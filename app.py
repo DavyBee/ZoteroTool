@@ -397,7 +397,7 @@ def _review_editor(job: scan.Job, items: list[dict], name: str, locked: bool,
     changes = st.session_state.get(key, {}).get("edited_rows", {})
     bar = st.container(horizontal=True)
     if any(set(c) - {"Select"} for c in changes.values()):
-        if bar.button("Save", type="primary", key=f"{name}_save"):
+        if bar.button("Save edits", type="primary", key=f"{name}_save"):
             apply_review_edits(job, urls, changes)
             _bump_table()
             st.rerun()
@@ -417,7 +417,8 @@ def _review_editor(job: scan.Job, items: list[dict], name: str, locked: bool,
             _bump_table()
             st.rerun()
         return
-    if bar.button(f"Mark for upload ({n})" if n else "Mark for upload", type="primary",
+    if bar.button(f"Mark ready for upload ({n})" if n else "Mark ready for upload",
+                  type="primary",
                   disabled=locked or not n, key=f"{name}_mark"):
         mark_for_upload(job, chosen)
         _bump_table()
@@ -505,7 +506,7 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
 
         actions = st.container(horizontal=True)
         if editing:
-            if actions.button("Save", type="primary", key="card_save"):
+            if actions.button("Save edits", type="primary", key="card_save"):
                 job.edit(p["url"], fields)
                 _bump_table()
                 st.session_state.pop("editing_url", None)
@@ -514,7 +515,8 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
                 st.session_state.pop("editing_url", None)
                 st.rerun()
             return
-        if actions.button("Correct", type="primary", disabled=frozen, key="card_correct"):
+        if actions.button("Mark ready for upload", type="primary", disabled=frozen,
+                          key="card_correct"):
             _decide(job, items, i, "edited" if p.get("was_edited") else "correct")
         if actions.button("Edit", disabled=frozen, key="card_edit"):
             st.session_state.editing_url = p["url"]
@@ -617,16 +619,17 @@ def step_scan(job: scan.Job | None) -> None:
     suffix = zlib.crc32(query.strip().lower().encode())
 
     if ready or not uploaded_any:
-        st.markdown(f"**Ready ({_count(shown_ready, ready)})**")
-    if shown_ready:
-        st.caption("Metadata found. Clear a box to leave an item out.")
-        _table(shown_ready, f"t_ready_{suffix}", review=False,
-               show_status=uploaded_any, locked=locked)
+        with st.expander(f"Ready ({_count(shown_ready, ready)})", expanded=True,
+                         key="exp_ready"):
+            if shown_ready:
+                st.caption("Metadata found. Clear a box to leave an item out.")
+                _table(shown_ready, f"t_ready_{suffix}", review=False,
+                       show_status=uploaded_any, locked=locked)
 
     st.markdown(f"**Review ({_count(shown_review, review)})**")
     if shown_review:
         st.caption("Could not be identified, or probably not a source. "
-                   "Only items marked Correct or Edited are uploaded.")
+                   "Only items marked ready for upload are uploaded.")
         review_section(job, shown_review, locked)
 
     if existing:
