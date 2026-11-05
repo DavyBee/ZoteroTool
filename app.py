@@ -13,6 +13,7 @@ import os
 import sys
 import tempfile
 import time
+import zlib
 
 import streamlit as st
 
@@ -233,7 +234,7 @@ def _table(items: list[dict], key: str, review: bool, show_status: bool,
            locked: bool) -> None:
     rows = []
     for p in items:
-        row = {"Upload": bool(p.get("include"))}
+        row = {"Upload": bool(p.get("include")), "Link": p["url"]}
         if show_status:
             row["Status"] = _status(p)
         if review:
@@ -245,7 +246,6 @@ def _table(items: list[dict], key: str, review: bool, show_status: bool,
         else:
             row["Year"] = p.get("year") or ""
             row["Journal"] = p.get("journal") or ""
-        row["Link"] = p["url"]
         rows.append(row)
     columns = list(rows[0]) if rows else []
     st.data_editor(
@@ -264,6 +264,23 @@ def _table(items: list[dict], key: str, review: bool, show_status: bool,
         },
         on_change=_on_edit, args=(key, [p["url"] for p in items]),
     )
+
+
+def _matching(items: list[dict], query: str) -> list[dict]:
+    """Items containing every word of the search."""
+    words = query.lower().split()
+    if not words:
+        return items
+
+    def text(p: dict) -> str:
+        return " ".join([p.get("title") or "", " ".join(p.get("authors") or []),
+                         p.get("journal") or "", p["url"], p.get("reason") or "",
+                         p.get("summary") or ""]).lower()
+    return [p for p in items if all(w in text(p) for w in words)]
+
+
+def _count(shown: list, total: list) -> str:
+    return str(len(total)) if len(shown) == len(total) else f"{len(shown)} of {len(total)}"
 
 
 def step_scan(job: scan.Job | None) -> None:
@@ -297,16 +314,25 @@ def step_scan(job: scan.Job | None) -> None:
     uploaded_any = any(_status(p) for p in ready + review)
     locked = phase == scan.UPLOADING
 
-    st.markdown(f"**Ready ({len(ready)})**")
-    if ready:
-        st.caption("Metadata found. Clear a box to leave an item out.")
-        _table(ready, "t_ready", review=False, show_status=uploaded_any, locked=locked)
+    query = st.text_input("Search results", placeholder="Title, author, journal, or link",
+                          key="results_query")
+    shown_ready, shown_review = _matching(ready, query), _matching(review, query)
+    # A different key per search, so a ticked box can't carry over to the
+    # wrong row when the list changes.
+    suffix = zlib.crc32(query.strip().lower().encode())
 
-    st.markdown(f"**Review ({len(review)})**")
-    if review:
+    st.markdown(f"**Ready ({_count(shown_ready, ready)})**")
+    if shown_ready:
+        st.caption("Metadata found. Clear a box to leave an item out.")
+        _table(shown_ready, f"t_ready_{suffix}", review=False,
+               show_status=uploaded_any, locked=locked)
+
+    st.markdown(f"**Review ({_count(shown_review, review)})**")
+    if shown_review:
         st.caption("Could not be identified, or probably not a source. "
                    "Only selected items are uploaded.")
-        _table(review, "t_review", review=True, show_status=uploaded_any, locked=locked)
+        _table(shown_review, f"t_review_{suffix}", review=True,
+               show_status=uploaded_any, locked=locked)
 
     if existing:
         with st.expander(f"Already in Zotero ({len(existing)})"):

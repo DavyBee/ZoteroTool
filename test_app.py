@@ -167,3 +167,13 @@ def test_settings_show_library_and_collection_names():
     texts = [t.value for t in _page().text]
     assert "Zotero library   Lab Library (group 1)" in texts
     assert "Collection       Testing (ABC123)" in texts
+
+
+def test_search_filters_the_results():
+    _scanned_job()
+    at = _page()
+    at.text_input(key="results_query").input("paper").run()
+    text = _text(at)
+    assert "**Ready (1)**" in text and "**Review (0 of 1)**" in text
+    at.text_input(key="results_query").input("nothing matches this").run()
+    assert "**Ready (0 of 1)**" in _text(at)
