@@ -392,3 +392,11 @@ def test_citoid_retries_rate_limits_but_not_not_found(monkeypatch):
     responses = [404, 200]
     assert metadata._citoid_get("https://a.org/2") is None
     assert codes == [404]
+
+
+def test_slack_note_heading_and_escaping():
+    html_note = zotero_client._comments_to_note_html([
+        {"author": "Ana", "text": "see <this> & that", "is_reply": False},
+        {"author": "Ben", "text": "agreed", "is_reply": True}])
+    assert html_note.startswith("<p><b>Slack replies</b></p>")
+    assert "&lt;this&gt; &amp; that" in html_note

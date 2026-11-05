@@ -3,7 +3,8 @@ zotero_client.py — Create items in the Zotero library.
 
 For each source selected on the page: one item with its bibliographic
 metadata, its file attached when one was downloaded, and a child note with
-the Slack discussion. Nothing else is written (no tags, no extra collections).
+the Slack post and its replies. Nothing else is written (no tags, no extra
+collections).
 """
 
 from __future__ import annotations
@@ -52,7 +53,7 @@ def _create_items(zot, items, retries: int = 3):
                 time.sleep(1.0 * (attempt + 1))
 
 # Where to put the journal/venue name depends on the Zotero item type.
-# None means the type has no venue field — skip it entirely.
+# None means the type has no venue field.
 # Derived from pyzotero item_template() calls against the live API.
 _VENUE_FIELD: dict[str, str | None] = {
     "journalArticle":  "publicationTitle",
@@ -83,11 +84,9 @@ _TYPE_SUPPORTS: dict[str, frozenset[str]] = {
     "podcast":         frozenset(["publisher"]),
 }
 
-# Non-Zotero / CSL-style type names that sources (esp. the LLM) sometimes emit,
-# mapped to the closest valid Zotero itemType. Anything not in _TYPE_SUPPORTS
-# after aliasing is coerced to "webpage" (see _zotero_item_type) so a bad type
-# can't make Zotero reject the whole item — which is what happened with the
-# LLM-invented "podcastEpisode".
+# Type names that aren't Zotero item types (the AI sometimes returns these),
+# mapped to the closest one. Anything still unknown becomes "webpage"
+# (_zotero_item_type), because Zotero rejects an item with an invalid type.
 _ITEM_TYPE_ALIASES = {
     "podcastEpisode":   "podcast",
     "audioRecording":   "podcast",
@@ -113,9 +112,9 @@ def make_zotero_client() -> zotero.Zotero:
     library_id  = config.zotero_library_id()
     library_type = config.zotero_library_type()
     if not api_key:
-        raise ValueError("ZOTERO_API_KEY not set — add it to .env or the environment")
+        raise ValueError("ZOTERO_API_KEY is not set in the app's secrets")
     if not library_id:
-        raise ValueError("ZOTERO_LIBRARY_ID not set — add it to .env or the environment")
+        raise ValueError("ZOTERO_LIBRARY_ID is not set in the app's secrets")
     return zotero.Zotero(library_id, library_type, api_key)
 
 
@@ -175,7 +174,7 @@ def upload_papers(
                                    "pdf_attach skipped: the downloaded file is gone "
                                    "(the app restarted); item uploaded without it"))
 
-            # Attach the Slack discussion (original message + thread replies) as a
+            # Attach the Slack post and replies as a
             # child note. Non-fatal: the parent is already uploaded, so a note
             # failure is recorded but doesn't fail the paper.
             comments = paper.get("comments") or []
@@ -213,10 +212,9 @@ def upload_papers(
 
 
 def _comments_to_note_html(comments: list) -> str:
-    """Render a paper's Slack comments (original message + thread replies) as one
-    Zotero note in HTML. Text is HTML-escaped and newlines become <br> so a stray
-    '<' or '&' in a Slack message can't corrupt the note."""
-    parts = ["<p><b>Slack discussion (Eviction Lab)</b></p>"]
+    """The Slack post and its replies as one Zotero note. Text is HTML-escaped
+    so a '<' or '&' in a message can't break the note."""
+    parts = ["<p><b>Slack replies</b></p>"]
     for c in comments:
         author = html.escape(c.get("author") or "?")
         text = html.escape(c.get("text") or "").replace("\n", "<br>")
@@ -323,15 +321,14 @@ def paper_to_zotero_item(paper: Paper) -> dict:
 
     item: dict = {
         "itemType":     item_type,
-        # Upload as-is even when the metadata stage didn't return a title — fall
-        # back to the Slack filename, then the URL, so the item is never blank.
+        # Without a title, use the Slack file name, then the URL.
         "title":        paper.get("title") or paper.get("slack_file_name") or paper.get("url") or "",
         "creators":     _build_creators(paper.get("authors") or []),
         "abstractNote": paper.get("abstract") or "",
         "url":          paper.get("url") or "",
         "language":     paper.get("language") or "",
         # No tags: uploads carry only bibliographic metadata, the file or link,
-        # and the Slack discussion note.
+        # and the Slack replies note.
     }
 
     coll_key = config.zotero_collection_key()

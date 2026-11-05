@@ -64,8 +64,7 @@ def save_pdf(url: str) -> Optional[tuple[str, int]]:
     return None
 
 
-# Slack-uploaded document types we accept (paper manuscripts). Images, slide
-# decks, and spreadsheets are deliberately excluded — they aren't papers.
+# Uploaded file types treated as papers. Images, slides, and spreadsheets are not.
 _SLACK_DOC_EXTS = (".pdf", ".docx", ".doc", ".rtf", ".odt")
 
 
@@ -84,10 +83,8 @@ def save_slack_file(download_url: str, key_url: str,
     token-bearing url_private, stored keyed by `key_url` (the stable permalink)
     and keeping the original extension so Zotero handles the file correctly.
 
-    PDFs get the %PDF magic-byte check. Other document types are accepted unless
-    the response is HTML — Slack serves the real file via its token, so the only
-    thing to reject is a login/error page (i.e. an expired token). Size cap and
-    idempotency (on key_url) as for save_pdf. Returns (path, size) or None."""
+    PDFs get the %PDF check. Other types are accepted unless Slack returned an
+    HTML page, which means the token has expired. Returns (path, size) or None."""
     config.PDFS_DIR.mkdir(parents=True, exist_ok=True)
     ext = _slack_doc_ext(filename)
     digest = hashlib.sha256(key_url.encode("utf-8")).hexdigest()[:16]
@@ -108,18 +105,9 @@ def save_slack_file(download_url: str, key_url: str,
 # ── HTTP fetch ────────────────────────────────────────────────────────────────
 
 def _fetch(url: str) -> tuple[Optional[bytes], str]:
-    """
-    GET a URL, returning (body, content_type). Body is None on any failure.
-
-    Delegates to http_fetch.fetch (browser impersonation via curl_cffi when
-    installed), so PDF downloads get past the same fingerprint-gated publisher
-    CDNs that block the metadata fetch — for open-access files. (Passing the
-    bot gate is not passing a paywall: a subscription-only PDF still won't
-    download.)
-    Reads up to PDF_FETCH_BYTES so a runaway server can't fill memory, and
-    retries once on a transient failure. (http_fetch also returns an HTTP
-    status, which PDF downloading doesn't need — dropped here.)
-    """
+    """(body, content_type), with body None on any failure. Reads at most
+    config.PDF_FETCH_BYTES. Paywalled PDFs won't download; open-access ones
+    usually do."""
     body, content_type, _status = http_fetch.fetch(url, max_bytes=config.PDF_FETCH_BYTES)
     return body, content_type
 
@@ -200,7 +188,7 @@ def _target_path_for(url: str):
 def _write_if_within_limit(target, body: bytes) -> Optional[tuple[str, int]]:
     """Honor the size cap, write atomically, return (path, size)."""
     if len(body) > config.PDF_MAX_BYTES:
-        return None     # too big — skip rather than half-fill the disk
+        return None     # too big; skip it
     tmp = target.with_name(target.name + ".tmp")
     try:
         with open(tmp, "wb") as f:

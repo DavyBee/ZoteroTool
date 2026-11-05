@@ -214,7 +214,7 @@ def render_done(job: scan.Job) -> None:
     st.write(f"Uploaded {r.get('uploaded', 0)} items to Zotero.")
     skipped = job.snapshot()["skipped_existing"]
     if skipped:
-        st.write(f"Skipped {skipped} added to Zotero since the scan.")
+        st.write(f"Skipped {skipped} that were added to Zotero after the scan.")
     if failed:
         st.error(f"{len(failed)} failed.")
         st.dataframe(
@@ -225,7 +225,7 @@ def render_done(job: scan.Job) -> None:
              if not msg.startswith(("upload failed", "batch upload failed"))]
     if other:
         with st.expander(f"Warnings ({len(other)})"):
-            st.write("Items were uploaded, but some attachments or notes were not.")
+            st.write("These items were uploaded without some of their files or notes.")
             st.code("\n".join(other), language=None)
 
     if failed:

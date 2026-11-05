@@ -1,23 +1,13 @@
 """
-http_fetch.py — the pipeline's single HTTP GET, with browser impersonation.
+http_fetch.py — Every web request for page content and PDFs goes through fetch().
 
-Every content fetch (publisher HTML for the LLM stage, PDF downloads) goes
-through fetch() so the one anti-bot knob lives in exactly one place.
+Many publisher sites reject plain scripted requests based on how the
+connection looks. curl_cffi makes the request look like a normal browser, which
+gets past some of these (ScienceDirect, Duke University Press, ...). Sites that
+require running JavaScript first (SSRN, JAMA, BMJ) still refuse; those items go
+to Review as "Page could not be accessed" unless another step finds them.
 
-Why this exists: many publisher CDNs sit behind Cloudflare and return 403 to a
-plain urllib request — they fingerprint the TLS/HTTP2 handshake and the
-User-Agent — even for open-access content. curl_cffi issues the request with a
-real browser's fingerprint, which the *fingerprint-gated* hosts (ScienceDirect,
-Lancet, MIT Press, Duke UP, …) admit. Hosts running a full Cloudflare JS
-challenge ("Just a moment…") still block us — that needs a JS runtime we
-deliberately don't ship — so those papers (JAMA, BMJ, SSRN, Oxford) stay on the
-manual "Access issues" path.
-
-curl_cffi is optional. If it isn't installed (or the native wheel won't load)
-we fall back to urllib with the browser User-Agent — i.e. exactly the previous
-behaviour: no rescue, but everything still works. Ongoing maintenance is a
-periodic `curl_cffi` version bump (it ships the fingerprints); failure is
-graceful — a blocked fetch just returns nothing, same as before.
+If curl_cffi isn't available, plain urllib is used instead.
 """
 
 from __future__ import annotations
@@ -110,10 +100,8 @@ def _fetch(url: str, *, max_bytes: int, timeout: Optional[int] = None,
       - network    → (None, "", 0)             DNS/connection/timeout, no HTTP
     Reads at most `max_bytes` (a runaway server can't fill memory).
 
-    The `status` lets callers tell a definitively-gone page (404/410) apart from
-    a block (403/429/5xx) or a transient network error — only 404/410 are a
-    reliable "dead page" signal. Retries once by default with a 1s backoff
-    (transient 5xx / rate limits), but never wastes a retry on 404/410.
+    Only 404 and 410 mean the page is gone; 403, 429 and 5xx may just be a
+    block. Retries once after a second, except on 404/410.
     """
     timeout = timeout or config.HTTP_TIMEOUT
     status = 0
@@ -124,7 +112,7 @@ def _fetch(url: str, *, max_bytes: int, timeout: Optional[int] = None,
                             else _get_urllib(url, max_bytes, timeout))
         if body is not None:
             return body, ct, status
-        if status in (404, 410):          # definitively gone — don't retry
+        if status in (404, 410):          # gone; don't retry
             break
     return None, "", status
 
@@ -158,10 +146,8 @@ def _get_cffi(url, max_bytes, timeout):
 
 
 def _get_urllib(url, max_bytes, timeout):
-    """Fallback when curl_cffi is unavailable: stdlib urllib with the browser
-    User-Agent (the previous behaviour — no fingerprint impersonation). Third
-    return value is the HTTP status (the HTTPError code on an error response, 0
-    when no HTTP response arrived at all)."""
+    """Used when curl_cffi is unavailable: urllib with a browser User-Agent.
+    The status is 0 when no HTTP response arrived."""
     req = Request(url, headers={"User-Agent": config.BROWSER_USER_AGENT, **_HEADERS})
     try:
         with urlopen(req, timeout=timeout) as resp:

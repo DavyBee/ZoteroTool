@@ -34,17 +34,17 @@ URL_RE = re.compile(r'<(https?://[^>|]+)(?:\|[^>]*)?>?')
 # DOI in free text or URL path
 DOI_RE = re.compile(r'(10\.\d{4,}/[^\s&?#"\'<>]+)', re.I)
 
-# <@U03M8H8N82Z> — Slack user mention; group(1) is the user id
+# <@U03M8H8N82Z>: a Slack user mention; group(1) is the user id
 USER_MENTION_RE = re.compile(r'<@([A-Z0-9]+)>')
 
-# <!subteam^S019|@everybody>, <!here>, <!channel> — group/broadcast mentions;
+# <!subteam^S019|@everybody>, <!here>, <!channel>: group mentions;
 # group(1) is the label if Slack included one, else the keyword.
 SPECIAL_MENTION_RE = re.compile(r'<!(?:[^>|]*\|)?@?([^>|]+)>')
 
 # A bold label in a workflow post, e.g. "*title*" or "*may interest:*".
 _LABEL_RE = re.compile(r'\*([^*\n]{1,40})\*')
 
-# "submission from <@U123>" — the person who filled in the workflow form.
+# "submission from <@U123>": the person who filled in the workflow form.
 _SUBMITTER_RE = re.compile(r'submission from\s*<@([A-Z0-9]+)>', re.I)
 
 
@@ -138,8 +138,8 @@ class ThreadedLink(TypedDict, total=False):
 
 
 class ThreadedFile(TypedDict):
-    url: str                  # the file's Slack permalink — stable, token-free
-    download_url: str         # url_private — carries an expiring token; fetch now
+    url: str                  # the file's Slack permalink (stable)
+    download_url: str         # url_private: its token expires
     name: str                 # original filename, e.g. "hepburn_2018.pdf"
     comments: list[Comment]   # the whole thread, chronological
 
@@ -262,7 +262,7 @@ def parse_workflow_post(text: str) -> Optional[dict[str, str]]:
 # ── Internals ─────────────────────────────────────────────────────────────────
 
 def _group_threads(tagged: list[tuple[str, dict]]) -> list[list[tuple[str, dict]]]:
-    """Group (path, message) pairs into threads (thread_ts, else ts — a
+    """Group (path, message) pairs into threads (thread_ts, else ts; a
     standalone message is a thread of one), each sorted chronologically."""
     threads: dict[str, list[tuple[str, dict]]] = {}
     for path, msg in tagged:
@@ -330,8 +330,7 @@ def _files_from_threads(threads, user_map) -> list[tuple[str, ThreadedFile]]:
     return out
 
 
-# Document uploads we treat as papers (PDF + Word/RTF/ODT). Images, slide decks,
-# and spreadsheets are deliberately excluded — they aren't papers.
+# Uploaded files treated as papers. Images, slides, and spreadsheets are not.
 _DOC_EXTS = {"pdf", "docx", "doc", "rtf", "odt"}
 
 
