@@ -341,3 +341,18 @@ def test_every_title_is_cleaned_after_lookup():
     p = {"url": "https://a.org", "title": "Cracking Down, Pricing Up <br>", "authors": ["A"]}
     scan._tidy(p)
     assert p["title"] == "Cracking Down, Pricing Up"
+
+
+def test_decide_sets_and_clears_review_decisions():
+    job = scan.Job([{"url": "https://a.org/x", "comments": []}], None,
+                   title_search=lambda *a: None,
+                   enrich=lambda p, *a: {"metadata_source": "needs_manual"})
+    job.start()
+    _wait(job, scan.SCANNED)
+    [p] = job.papers
+    job.decide(p["url"], "edited", {"title": "Fixed"})
+    assert (p["decision"], p["title"], p["include"]) == ("edited", "Fixed", True)
+    job.decide(p["url"], "removed")
+    assert not p["include"]
+    job.decide(p["url"], None)
+    assert "decision" not in p and not p["include"]

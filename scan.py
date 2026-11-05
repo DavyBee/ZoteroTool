@@ -405,6 +405,27 @@ class Job:
                     p["include"] = include
                     return
 
+    # Review decisions. Correct and Edit upload the item; Not a source and
+    # Remove leave it out (Remove: handled another way, such as the Zotero
+    # Connector, or simply not wanted).
+    DECISIONS = ("correct", "edited", "not_source", "removed")
+
+    def decide(self, url: str, decision: Optional[str],
+               fields: Optional[dict] = None) -> None:
+        """Record a review decision (None clears it), applying edited fields."""
+        assert decision is None or decision in self.DECISIONS
+        with self.lock:
+            for p in self.papers:
+                if p["url"] == url and p.get("bucket") == REVIEW:
+                    if fields:
+                        p.update({k: v for k, v in fields.items()})
+                    if decision is None:
+                        p.pop("decision", None)
+                    else:
+                        p["decision"] = decision
+                    p["include"] = decision in ("correct", "edited")
+                    return
+
     def selected(self) -> list[dict]:
         with self.lock:
             return [p for p in self.papers

@@ -177,3 +177,53 @@ def test_search_filters_the_results():
     assert "**Ready (1)**" in text and "**Review (0 of 1)**" in text
     at.text_input(key="results_query").input("nothing matches this").run()
     assert "**Ready (0 of 1)**" in _text(at)
+
+
+# ── Review cards ──────────────────────────────────────────────────────────────
+
+def _junk(job):
+    return next(p for p in job.papers if p["url"].endswith("junk"))
+
+
+def test_review_card_correct_adds_the_item_to_the_upload():
+    job = _scanned_job()
+    at = _page()
+    assert "1 of 1 · 0 decided" in _text(at)
+    _buttons(at)["Correct"].click().run()
+    assert _junk(job)["decision"] == "correct" and _junk(job)["include"]
+    assert "Upload 2 to Zotero" in _buttons(at)
+
+
+@pytest.mark.parametrize("label, decision", [("Not a source", "not_source"),
+                                             ("Remove", "removed")])
+def test_review_card_rejections_leave_the_item_out(label, decision):
+    job = _scanned_job()
+    at = _page()
+    _buttons(at)[label].click().run()
+    assert _junk(job)["decision"] == decision and not _junk(job)["include"]
+    assert "Upload 1 to Zotero" in _buttons(at)
+    assert "1 of 1 · 1 decided" in _text(at)
+
+
+def test_review_card_edit_saves_the_fields_and_uploads():
+    job = _scanned_job()
+    at = _page()
+    _buttons(at)["Edit"].click().run()
+    import zlib
+    k = zlib.crc32(_junk(job)["url"].encode())
+    at.text_input(key=f"edit_title_{k}").input("The Real Title")
+    at.text_input(key=f"edit_authors_{k}").input("Doe, Jane; Roe, Rich")
+    at.text_input(key=f"edit_year_{k}").input("2023")
+    _buttons(at)["Save"].click().run()
+    p = _junk(job)
+    assert (p["decision"], p["title"], p["authors"], p["year"]) == \
+        ("edited", "The Real Title", ["Doe, Jane", "Roe, Rich"], "2023")
+    assert p["include"] and "Upload 2 to Zotero" in _buttons(at)
+
+
+def test_review_table_view_is_still_available():
+    _scanned_job()
+    at = _page()
+    at.radio(key="review_view").set_value("Table").run()
+    assert not at.exception
+    assert "Correct" not in _buttons(at)
