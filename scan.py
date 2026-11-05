@@ -25,6 +25,8 @@ import metadata
 import slack_parser
 from database import _new_paper, normalize_url
 from url_expander import is_tweet_url
+from zotero_index import (LibraryIndex, doi_key, title_key, titles_match,
+                          year_of)
 
 
 # ── Reading an export ─────────────────────────────────────────────────────────
@@ -137,25 +139,32 @@ def collect_papers(paths: list[str], user_map: dict[str, str]) -> list[dict]:
 
 # ── Sorting results ───────────────────────────────────────────────────────────
 
-READY, REVIEW = "ready", "review"
+READY, REVIEW, EXISTING = "ready", "review", "existing"
 
 
 def classify(paper: dict) -> tuple[str, str]:
     """(bucket, reason) for an enriched paper. Review items carry a short reason
-    shown in the app; Ready items have none."""
+    shown in the app; Ready items have none; Existing items say what matched."""
     src = paper.get("metadata_source")
+    if paper.get("existing_key"):
+        return EXISTING, paper.get("existing_how", "")
     if paper.get("not_scanned"):
         return REVIEW, "Not scanned"
     if paper.get("scan_error"):
         return REVIEW, "Error during scan"
+    if src in ("crossref_doi", "translator", "llm") and paper.get("title") \
+            and paper.get("hint_mismatch"):
+        return REVIEW, "Title differs from Slack post"
     if src in ("crossref_doi", "translator"):
         if paper.get("title"):
             return READY, ""
         return REVIEW, "No title found"
     if src == "llm":
-        if paper.get("low_context"):
+        if paper.get("low_context") and not paper.get("hint_confirmed"):
             return REVIEW, "Little text to read"
         return READY, ""
+    if src == "slack_hint":
+        return REVIEW, "Title from Slack post only"
     if src == "link":
         return REVIEW, "Tweet" if is_tweet_url(paper["url"]) else "Web page, not a paper"
     if src == "non_paper":
@@ -169,25 +178,69 @@ def classify(paper: dict) -> tuple[str, str]:
     return REVIEW, "No metadata found"
 
 
+def apply_hints(paper: dict, title_search: Callable[..., Optional[tuple]]) -> None:
+    """Use the title typed into a "Post an article" Slack form.
+
+    If enrichment found metadata, the typed title confirms it or flags it for
+    review. If enrichment found nothing, the typed title is searched on CrossRef;
+    failing that it becomes the item's title, and the item goes to Review."""
+    hints = paper.get("slack_hints") or {}
+    hint = hints.get("title")
+    if not hint:
+        return
+    if paper.get("metadata_source") in ("crossref_doi", "translator", "llm") \
+            and paper.get("title"):
+        if titles_match(paper["title"], hint):
+            paper["hint_confirmed"] = True
+        else:
+            paper["hint_mismatch"] = True
+        return
+    author = re.split(r",|&| and ", hints.get("authors") or "")[0].strip() or None
+    found = title_search(hint, author) or (title_search(hint) if author else None)
+    if found:
+        source, fields = found
+        for k, v in fields.items():
+            if v not in (None, "", [], {}):
+                paper[k] = v
+        paper["metadata_source"] = source
+        paper["hint_confirmed"] = True
+        paper.pop("low_context", None)
+    else:
+        paper["title"] = hint
+        paper["metadata_source"] = "slack_hint"
+
+
 # ── The job ───────────────────────────────────────────────────────────────────
 
-SCANNING, SCANNED, UPLOADING, DONE = "scanning", "scanned", "uploading", "done"
+SCANNING, SCANNED, UPLOADING, DONE, FAILED = (
+    "scanning", "scanned", "uploading", "done", "failed")
 WORKERS = 4
 
 
 class Job:
     """One scan of one export, then its upload. Thread-safe: the background
-    thread mutates it under `lock`; the page reads it under `lock`."""
+    thread mutates it under `lock`; the page reads it under `lock`.
+
+    load_index / refresh_index read the Zotero target (see zotero_index). They
+    are optional so the flow can be tested offline; the app always passes them."""
 
     def __init__(self, papers: list[dict], anthropic_key: Optional[str],
                  audit_log_path: Optional[str] = None,
-                 enrich: Callable[..., dict] = metadata.enrich_paper):
+                 enrich: Callable[..., dict] = metadata.enrich_paper,
+                 load_index: Optional[Callable[[], LibraryIndex]] = None,
+                 refresh_index: Optional[Callable[[LibraryIndex], None]] = None,
+                 title_search: Callable[..., Optional[tuple]] = metadata.search_crossref_title):
         self.papers = papers
         self.anthropic_key = anthropic_key
         self.audit_log_path = audit_log_path
         self._enrich = enrich
+        self._load_index = load_index
+        self._refresh_index = refresh_index
+        self._title_search = title_search
+        self.index: Optional[LibraryIndex] = None
         self.lock = threading.RLock()
         self.phase = SCANNING
+        self.step = "Reading Zotero library" if load_index else "Scanning"
         self.total = len(papers)
         self.done = 0
         self.log: deque[str] = deque(maxlen=1000)
@@ -195,6 +248,7 @@ class Job:
         self.started_at = time.time()
         self.upload_result: Optional[dict] = None
         self.fatal_error: Optional[str] = None
+        self.skipped_existing = 0
         self._thread: Optional[threading.Thread] = None
 
     # Scan ------------------------------------------------------------------
@@ -207,26 +261,63 @@ class Job:
         with self.lock:
             self.stop_requested = True
 
+    def _mark_existing(self, paper: dict, hit: tuple[str, str]) -> None:
+        paper["existing_key"], paper["existing_how"] = hit
+        if self.index is not None:
+            paper["existing_url"] = self.index.item_url(hit[0])
+            paper["existing_title"] = self.index.titles.get(hit[0])
+        paper["bucket"], paper["reason"] = classify(paper)
+        paper["include"] = False
+
     def _enrich_one(self, paper: dict) -> dict:
         if self.stop_requested:
             return {"metadata_source": "none", "not_scanned": True}
         try:
-            return self._enrich(paper, self.anthropic_key, self.audit_log_path)
+            fields = self._enrich(paper, self.anthropic_key, self.audit_log_path)
+            trial = {**paper, **fields}
+            apply_hints(trial, self._title_search)
+            return {k: v for k, v in trial.items() if paper.get(k) is not v}
         except Exception as exc:
             return {"metadata_source": "none", "scan_error": f"{type(exc).__name__}: {exc}"}
 
     def _run_scan(self) -> None:
+        if self._load_index is not None:
+            try:
+                index = self._load_index()
+            except Exception as exc:
+                with self.lock:
+                    self.fatal_error = f"Could not read the Zotero library. {exc}"
+                    self.phase = FAILED
+                return
+            with self.lock:
+                self.index = index
+                self.step = "Scanning"
+
+        to_scan = []
+        with self.lock:
+            for p in self.papers:
+                hit = self.index.match_identifiers(p) if self.index else None
+                if hit:
+                    self._mark_existing(p, hit)
+                    self.done += 1
+                    self.log.append(f"{_label(p)}  {p['url']}")
+                else:
+                    to_scan.append(p)
+
         try:
             with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-                futures = {pool.submit(self._enrich_one, p): p for p in self.papers}
+                futures = {pool.submit(self._enrich_one, p): p for p in to_scan}
                 for fut in as_completed(futures):
                     paper = futures[fut]
                     fields = fut.result()
                     with self.lock:
                         paper.update(fields)
-                        bucket, reason = classify(paper)
-                        paper["bucket"], paper["reason"] = bucket, reason
-                        paper["include"] = bucket == READY
+                        hit = self.index.match(paper) if self.index else None
+                        if hit:
+                            self._mark_existing(paper, hit)
+                        else:
+                            paper["bucket"], paper["reason"] = classify(paper)
+                            paper["include"] = paper["bucket"] == READY
                         self.done += 1
                         self.log.append(f"{_label(paper)}  {paper['url']}")
         except Exception:
@@ -238,7 +329,36 @@ class Job:
                     p.update(not_scanned=True, metadata_source="none")
                     p["bucket"], p["reason"] = classify(p)
                     p["include"] = False
+            self._merge_duplicates()
             self.phase = SCANNED
+
+    def _merge_duplicates(self) -> None:
+        """Two links in one export can turn out to be the same work once
+        enriched (a doi.org link and the publisher's page). Keep one, preferring
+        Ready, and give it the other's Slack comments and PDF."""
+        rank = {EXISTING: 0, READY: 1, REVIEW: 2}
+        seen: dict[tuple, dict] = {}
+        keep: list[dict] = []
+        for p in sorted(self.papers, key=lambda p: rank.get(p.get("bucket"), 3)):
+            keys = [("doi", doi_key(p.get("doi")))]
+            t, y = title_key(p.get("title")), year_of(p.get("year"))
+            if t and y:
+                keys.append(("title", t, y))
+            keys = [k for k in keys if k[-1]]
+            target = next((seen[k] for k in keys if k in seen), None)
+            if target is None:
+                for k in keys:
+                    seen[k] = p
+                keep.append(p)
+                continue
+            ts = {c["ts"] for c in target.get("comments", [])}
+            target.setdefault("comments", []).extend(
+                c for c in p.get("comments", []) if c["ts"] not in ts)
+            target["comments"].sort(key=lambda c: float(c.get("ts") or 0))
+            if not target.get("local_pdf_path") and p.get("local_pdf_path"):
+                target["local_pdf_path"] = p["local_pdf_path"]
+                target["pdf_size_bytes"] = p.get("pdf_size_bytes")
+        self.papers = keep
 
     # Review ----------------------------------------------------------------
 
@@ -252,14 +372,15 @@ class Job:
     def set_include(self, url: str, include: bool) -> None:
         with self.lock:
             for p in self.papers:
-                if p["url"] == url:
+                if p["url"] == url and p.get("bucket") != EXISTING:
                     p["include"] = include
                     return
 
     def selected(self) -> list[dict]:
         with self.lock:
             return [p for p in self.papers
-                    if p.get("include") and not p.get("zotero_key")]
+                    if p.get("include") and not p.get("zotero_key")
+                    and p.get("bucket") != EXISTING]
 
     # Upload ----------------------------------------------------------------
 
@@ -273,6 +394,7 @@ class Job:
                 p.pop("upload_error", None)
                 _prepare_for_upload(p)
             self.phase = UPLOADING
+            self.step = "Checking Zotero" if self._refresh_index else "Uploading"
             self.total, self.done = len(papers), 0
         if upload is None:
             import zotero_client
@@ -281,12 +403,35 @@ class Job:
             target=self._run_upload, args=(papers, make_client, upload), daemon=True)
         self._thread.start()
 
+    def _recheck(self, papers: list[dict]) -> list[dict]:
+        """Drop anything added to Zotero since the scan read it."""
+        if self._refresh_index is None or self.index is None:
+            return papers
+        try:
+            self._refresh_index(self.index)
+        except Exception:
+            return papers                  # the upload itself will report it
+        out = []
+        with self.lock:
+            for p in papers:
+                hit = self.index.match(p)
+                if hit:
+                    self._mark_existing(p, hit)
+                else:
+                    out.append(p)
+            self.skipped_existing = len(papers) - len(out)
+            self.total = len(out)
+            self.step = "Uploading"
+        return out
+
     def _run_upload(self, papers, make_client, upload) -> None:
         def progress(done: int, total: int) -> None:
             with self.lock:
                 self.done = done
+        papers = self._recheck(papers)
         try:
-            result = upload(papers, make_client(), progress_cb=progress)
+            result = upload(papers, make_client(), progress_cb=progress) if papers \
+                else {"uploaded": 0, "failed": 0, "errors": []}
         except Exception as exc:
             result = {"uploaded": 0, "failed": len(papers),
                       "errors": [("", f"{type(exc).__name__}: {exc}")]}
@@ -300,9 +445,11 @@ class Job:
 
     def snapshot(self) -> dict:
         with self.lock:
-            return {"phase": self.phase, "done": self.done, "total": self.total,
+            return {"phase": self.phase, "step": self.step,
+                    "done": self.done, "total": self.total,
                     "log": list(self.log), "fatal_error": self.fatal_error,
                     "upload_result": self.upload_result,
+                    "skipped_existing": self.skipped_existing,
                     "stopping": self.stop_requested and self.phase == SCANNING}
 
 
@@ -320,7 +467,7 @@ def _prepare_for_upload(p: dict) -> None:
 
 
 def _label(p: dict) -> str:
-    return "Ready " if p.get("bucket") == READY else "Review"
+    return {READY: "Ready     ", EXISTING: "In Zotero "}.get(p.get("bucket"), "Review    ")
 
 
 def _sort_title(p: dict) -> str:
@@ -355,5 +502,5 @@ def clear_job() -> None:
     """Discard the finished job's results. A running job is left alone."""
     global _current
     with _current_lock:
-        if _current is not None and _current.snapshot()["phase"] in (SCANNED, DONE):
+        if _current is not None and _current.snapshot()["phase"] in (SCANNED, DONE, FAILED):
             _current = None

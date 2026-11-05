@@ -352,6 +352,37 @@ _CROSSREF_TYPE_MAP = {
 }
 
 
+def search_crossref_title(title: str, author: Optional[str] = None) -> Optional[tuple[str, dict]]:
+    """Find a work on CrossRef by its title (e.g. one typed into the lab's
+    "Post an article" Slack form), tolerating typos. A hit is only accepted
+    when its title matches, and either the typed author is among its authors
+    or, with no author typed, the title is specific (four or more words).
+    Returns lookup_doi's (source, fields) or None."""
+    from zotero_index import title_key, titles_match, _typo
+    words = (title_key(title) or "").split()
+    if not author and len(words) < 4:
+        return None
+    query = f"query.bibliographic={url_quote(title)}"
+    if author:
+        query += f"&query.author={url_quote(author)}"
+    raw = _http_get_json(f"{config.CROSSREF_BASE}?{query}&rows=5&select=DOI,title")
+    items = ((raw or {}).get("message") or {}).get("items") or [] if isinstance(raw, dict) else []
+    want = (title_key(author) or "").split()
+    for it in items:
+        found = (it.get("title") or [None])[0]
+        if not (found and it.get("DOI") and titles_match(found, title)):
+            continue
+        result = lookup_doi(it["DOI"])
+        if result is None:
+            continue
+        if want:
+            names = {w for a in result[1].get("authors") or [] for w in (title_key(a) or "").split()}
+            if not any(_typo(w, n) for w in want for n in names):
+                continue
+        return result
+    return None
+
+
 def fetch_crossref_doi(doi: str) -> Optional[dict]:
     """Direct DOI lookup. Returns the inner 'message' dict or None."""
     raw = _http_get_json(f"{config.CROSSREF_BASE}/{url_quote(doi, safe='/')}")

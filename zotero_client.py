@@ -13,8 +13,16 @@ Zotero's recognizer remains the authoritative PDF handler.
 
 from __future__ import annotations
 
+import hashlib
 import html
+import json
+import mimetypes
+import os
+import re
 import time
+from urllib.error import HTTPError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 from typing import Callable, Optional
 
 from pyzotero import zotero
@@ -198,7 +206,7 @@ def upload_papers(
                 local_pdf = pdf_storage.ensure_local_pdf(paper)
                 if local_pdf:
                     try:
-                        zot.attachment_simple([local_pdf], parentid=zotero_key)
+                        attach_file(zot, zotero_key, local_pdf, _file_name(paper, local_pdf))
                         n_pdf += 1
                     except Exception as exc:
                         errors.append((paper["url"], f"pdf_attach failed: {exc}"))
@@ -261,6 +269,72 @@ def _comments_to_note_html(comments: list) -> str:
     return "".join(parts)
 
 
+# ── File attachments ──────────────────────────────────────────────────────────
+# Zotero's documented file-upload protocol, done directly rather than through
+# pyzotero's attachment helpers (whose filename handling has changed between
+# versions and fails silently, returning a "failure" list instead of raising).
+# https://www.zotero.org/support/dev/web_api/v3/file_upload
+
+def _file_name(paper: dict, path: str) -> str:
+    """A readable stored filename, e.g. "Diamond 2021 - Where is Standard of
+    Living the Highest.pdf". Zotero rejects names containing a directory."""
+    ext = os.path.splitext(path)[1].lower() or ".pdf"
+    authors = paper.get("authors") or []
+    first = authors[0].split(",")[0].strip() if authors else ""
+    parts = " ".join(x for x in (first, paper.get("year") or "") if x)
+    title = re.sub(r"[^\w\s\-]", "", paper.get("title") or "")[:80].strip()
+    name = " - ".join(x for x in (parts, title) if x) or "Full Text"
+    return re.sub(r"\s+", " ", name) + ext
+
+
+def attach_file(zot, parent_key: str, path: str, filename: str) -> None:
+    """Upload `path` as a stored-file attachment of `parent_key`. Raises on any
+    failure, after removing the empty attachment item it created."""
+    with open(path, "rb") as f:
+        body = f.read()
+    ctype = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    resp = _create_items(zot, [{
+        "itemType": "attachment", "linkMode": "imported_file", "parentItem": parent_key,
+        "title": "Full Text PDF" if ctype == "application/pdf" else filename,
+        "contentType": ctype, "filename": filename, "tags": [], "relations": {},
+    }])
+    if not resp.get("successful"):
+        msg = next(iter(resp.get("failed", {}).values()), {}).get("message", "unknown error")
+        raise RuntimeError(f"attachment item rejected: {msg}")
+    key = resp["successful"]["0"]["data"]["key"]
+    base = f"{zot.endpoint}/{zot.library_type}/{zot.library_id}/items/{key}/file"
+    headers = {"Zotero-API-Key": zot.api_key, "Zotero-API-Version": "3",
+               "If-None-Match": "*"}
+    try:
+        auth = json.loads(_http("POST", base, urlencode({
+            "md5": hashlib.md5(body).hexdigest(), "filename": filename,
+            "filesize": len(body), "mtime": int(os.path.getmtime(path) * 1000),
+        }).encode(), {**headers, "Content-Type": "application/x-www-form-urlencoded"}))
+        if auth.get("exists"):
+            return
+        _http("POST", auth["url"],
+              auth["prefix"].encode("latin-1") + body + auth["suffix"].encode("latin-1"),
+              {"Content-Type": auth["contentType"]})
+        _http("POST", base, urlencode({"upload": auth["uploadKey"]}).encode(),
+              {**headers, "Content-Type": "application/x-www-form-urlencoded"})
+    except Exception:
+        try:
+            zot.delete_item(zot.item(key))
+        except Exception:
+            pass
+        raise
+
+
+def _http(method: str, url: str, data: bytes, headers: dict) -> bytes:
+    req = Request(url, data=data, headers=headers, method=method)
+    try:
+        with urlopen(req, timeout=120) as r:
+            return r.read()
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", "replace")[:200]
+        raise RuntimeError(f"HTTP {exc.code}: {detail}") from None
+
+
 # ── Item mapping ──────────────────────────────────────────────────────────────
 
 def paper_to_zotero_item(paper: Paper) -> dict:
@@ -276,7 +350,8 @@ def paper_to_zotero_item(paper: Paper) -> dict:
         "abstractNote": paper.get("abstract") or "",
         "url":          paper.get("url") or "",
         "language":     paper.get("language") or "",
-        "tags":         [{"tag": kw} for kw in (paper.get("keywords") or [])],
+        # No tags: uploads carry only bibliographic metadata, the file or link,
+        # and the Slack discussion note.
     }
 
     coll_key = config.zotero_collection_key()
