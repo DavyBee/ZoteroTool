@@ -78,7 +78,7 @@ def test_title_needs_matching_year_or_author(index):
     assert index.match({**base, "year": "2019"}) is None
     assert index.match({**base, "authors": ["Smith, A"]}) == ("TY", "Title")
     assert index.match({**base, "authors": ["Jones, B"]}) is None
-    assert index.match(base) is None
+    assert index.match(base) == ("TY", "Title")        # no year or authors: a thin record
     assert index.match({"url": "https://o.org", "title": "Housing policy review",
                         "authors": ["Urban Institute"]}) == ("TA", "Title")
 
@@ -407,3 +407,24 @@ def test_slack_note_heading_and_escaping():
         {"author": "Ben", "text": "agreed", "is_reply": True}])
     assert html_note.startswith("<p><b>Slack replies</b></p>")
     assert "&lt;this&gt; &amp; that" in html_note
+
+
+def test_identical_title_matches_when_the_year_is_missing_and_details_are_thin():
+    ix = zi.LibraryIndex()
+    ix.add(item("G", title="The Geography of Gentrification and Residential Mobility",
+                date="2022", creators=[{"lastName": "Lee", "firstName": "Hyojung"}]))
+    ix.add(item("S", title="Where Is the Housing Shortage?", date="2025",
+                creators=[{"lastName": "Doe"}]))
+    ix.add(item("V", title="Rent Guarantee Insurance Effects", date="2024",
+                creators=[{"lastName": "Abramson"}]))
+    # Long identical title, no year, garbled authors
+    assert ix.match({"url": "https://x", "title": "The Geography of Gentrification and "
+                     "Residential Mobility", "authors": ["Hyojung, L"]}) == ("G", "Title")
+    # A landing page: no authors, no year
+    assert ix.match({"url": "https://y", "title": "Where Is the Housing Shortage?"}) == ("S", "Title")
+    # Different known years stay separate versions
+    assert ix.match({"url": "https://z", "title": "Rent Guarantee Insurance Effects",
+                     "year": "2019", "authors": ["Abramson, B"]}) is None
+    # A short title with a different author and no year doesn't match
+    assert ix.match({"url": "https://w", "title": "Rent Guarantee Insurance Effects",
+                     "authors": ["Smith, A"]}) is None

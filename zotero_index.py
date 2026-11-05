@@ -182,8 +182,11 @@ class LibraryIndex:
 
     def match(self, paper: dict) -> Optional[tuple[str, str]]:
         """(item key, "DOI" | "URL" | "Title") using everything enrichment found.
-        A title only counts with a matching year, or, when a year is missing,
-        a matching first author, so short generic titles don't collide."""
+        An identical title counts when the years match. Different years are
+        different versions (a working paper and the article) and don't match.
+        When a year is missing, it counts if the first authors match, the title
+        is six words or more, or this item has no authors (a landing page or a
+        thin record); short generic titles alone don't."""
         hit = self.match_identifiers(paper)
         if hit:
             return hit
@@ -192,11 +195,14 @@ class LibraryIndex:
             return None
         year = year_of(paper.get("year"))
         author = first_author(paper.get("authors") or [])
+        words = len(t.split())
         for item_year, item_author, key in self._by_title[t]:
             if year and item_year:
                 if year == item_year:
                     return key, "Title"
             elif author and item_author and author == item_author:
+                return key, "Title"
+            elif words >= 6 or (not author and words >= 3):
                 return key, "Title"
         return None
 
