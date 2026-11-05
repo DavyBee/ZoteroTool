@@ -118,6 +118,26 @@ def make_zotero_client() -> zotero.Zotero:
     return zotero.Zotero(library_id, library_type, api_key)
 
 
+def library_label() -> str:
+    """The library's name with its id, e.g. "Eviction Lab Library (group 123)".
+    A personal library is "My Library" in Zotero."""
+    kind, lib = config.zotero_library_type(), config.zotero_library_id()
+    if kind != "group":
+        return f"My Library (user {lib})"
+    zot = make_zotero_client()
+    data = json.loads(_http("GET", f"{zot.endpoint}/groups/{lib}", None,
+                            {"Zotero-API-Key": zot.api_key, "Zotero-API-Version": "3"}))
+    return f"{data['data']['name']} (group {lib})"
+
+
+def collection_label() -> str:
+    """The upload collection's name with its key, or "Library root"."""
+    key = config.zotero_collection_key()
+    if not key:
+        return "Library root"
+    return f"{make_zotero_client().collection(key)['data']['name']} ({key})"
+
+
 def upload_papers(
     papers: list[Paper],
     zot: zotero.Zotero,

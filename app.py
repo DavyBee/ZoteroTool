@@ -386,12 +386,31 @@ def step_upload(job: scan.Job | None) -> None:
 
 # ── Settings ──────────────────────────────────────────────────────────────────
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def _zotero_labels(kind: str, lib: str, collection: str) -> tuple[str, str]:
+    """Library and collection names for Settings, looked up once an hour.
+    Falls back to the ids if Zotero can't be reached."""
+    try:
+        library = zotero_client.library_label()
+    except Exception:
+        library = f"{kind} {lib}"
+    try:
+        folder = zotero_client.collection_label()
+    except Exception:
+        folder = collection or "Library root"
+    return library, folder
+
+
 def render_settings() -> None:
     with st.expander("Settings"):
         lib = config.zotero_library_id()
-        st.text(f"Zotero library   {config.zotero_library_type()} {lib}" if lib
-                else "Zotero library   not set")
-        st.text(f"Collection       {config.zotero_collection_key() or 'library root'}")
+        if zotero_ready():
+            library, folder = _zotero_labels(config.zotero_library_type(), lib,
+                                             config.zotero_collection_key() or "")
+        else:
+            library, folder = "not set", config.zotero_collection_key() or "Library root"
+        st.text(f"Zotero library   {library}")
+        st.text(f"Collection       {folder}")
         st.text(f"Anthropic key    {'set' if config.anthropic_api_key() else 'not set'}")
         st.text(f"Model            {config.llm_model()}")
 

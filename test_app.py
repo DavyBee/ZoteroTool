@@ -25,6 +25,9 @@ def _code_stamp():
 def env(monkeypatch):
     # The modules these tests imported are current, so the page should use them.
     monkeypatch.setattr(sys, "_slack_to_zotero_code", _code_stamp(), raising=False)
+    import zotero_client
+    monkeypatch.setattr(zotero_client, "library_label", lambda: "Lab Library (group 1)")
+    monkeypatch.setattr(zotero_client, "collection_label", lambda: "Testing (ABC123)")
     monkeypatch.setenv("ZOTERO_API_KEY", "test")
     monkeypatch.setenv("ZOTERO_LIBRARY_ID", "1")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -156,3 +159,11 @@ def test_changed_code_is_loaded_fresh(monkeypatch):
         assert sys._slack_to_zotero_code == _code_stamp()
     finally:
         sys.modules.update(saved)
+
+
+def test_settings_show_library_and_collection_names():
+    from streamlit import cache_data
+    cache_data.clear()
+    texts = [t.value for t in _page().text]
+    assert "Zotero library   Lab Library (group 1)" in texts
+    assert "Collection       Testing (ABC123)" in texts
