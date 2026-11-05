@@ -384,14 +384,22 @@ def _review_editor(job: scan.Job, items: list[dict], name: str, locked: bool,
             "Journal": st.column_config.TextColumn(width=150),
             "Summary": st.column_config.TextColumn(width=220),
         },
-        on_change=_on_review_edit, args=(key, urls),
     )
     changes = st.session_state.get(key, {}).get("edited_rows", {})
+    bar = st.container(horizontal=True)
+    if any(set(c) - {"Select"} for c in changes.values()):
+        if bar.button("Save", type="primary", key=f"{name}_save"):
+            apply_review_edits(job, urls, changes)
+            _bump_table()
+            st.rerun()
+        if bar.button("Cancel", key=f"{name}_cancel"):
+            _bump_table()
+            st.rerun()
+        return
     chosen = [items[int(r)] for r, c in changes.items()
               if c.get("Select") and int(r) < len(items)
               and not items[int(r)].get("zotero_key")]
     n = len(chosen)
-    bar = st.container(horizontal=True)
     if undo:
         if bar.button(f"Undo ({n})" if n else "Undo", disabled=locked or not n,
                       key=f"{name}_undo"):
@@ -411,12 +419,6 @@ def _review_editor(job: scan.Job, items: list[dict], name: str, locked: bool,
             job.decide(p["url"], "removed")
         _bump_table()
         st.rerun()
-
-
-def _on_review_edit(key: str, urls: list[str]) -> None:
-    job = scan.current_job()
-    if job is not None:
-        apply_review_edits(job, urls, st.session_state[key]["edited_rows"])
 
 
 def apply_review_edits(job: scan.Job, urls: list[str], edited_rows: dict) -> None:
@@ -463,16 +465,22 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
                 st.badge(_DECISION_LABELS[p["decision"]], color="green")
             if p.get("zotero_key"):
                 st.badge("Uploaded", color="blue")
-        lines = [
-            _field("Title", p.get("title") or p.get("slack_file_name")),
-            _field("Authors", _all_authors(p.get("authors") or [])),
-            _field("Year", p.get("year")),
-            _field("Website" if p.get("item_type") == "webpage" else "Journal",
-                   p.get("journal") or (scan.site_name(p["url"])
-                                        if p.get("item_type") == "webpage" else None)),
-            f"**Link:** [{_md(_short_link(p['url']))}]({p['url']})",
-            _field("Link summary", p.get("summary")),
-        ]
+        frozen = locked or bool(p.get("zotero_key"))
+        editing = st.session_state.get("editing_url") == p["url"] and not frozen
+        if editing:
+            fields = _edit_fields(p)
+            lines = []
+        else:
+            lines = [
+                _field("Title", p.get("title") or p.get("slack_file_name")),
+                _field("Authors", _all_authors(p.get("authors") or [])),
+                _field("Year", p.get("year")),
+                _field("Website" if p.get("item_type") == "webpage" else "Journal",
+                       p.get("journal") or (scan.site_name(p["url"])
+                                            if p.get("item_type") == "webpage" else None)),
+            ]
+        lines += [f"**Link:** [{_md(_short_link(p['url']))}]({p['url']})",
+                  _field("Link summary", p.get("summary"))]
         comments = p.get("comments") or []
         if comments:
             first = comments[0]
@@ -486,18 +494,44 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
         # One block with line breaks keeps the card compact.
         st.markdown("  \n".join(lines))
 
-        frozen = locked or bool(p.get("zotero_key"))
-        if st.session_state.get("editing_url") == p["url"] and not frozen:
-            _edit_form(job, items, i)
-            return
         actions = st.container(horizontal=True)
+        if editing:
+            if actions.button("Save", type="primary", key="card_save"):
+                job.edit(p["url"], fields)
+                _bump_table()
+                st.session_state.pop("editing_url", None)
+                st.rerun()
+            if actions.button("Cancel", key="card_cancel"):
+                st.session_state.pop("editing_url", None)
+                st.rerun()
+            return
         if actions.button("Correct", type="primary", disabled=frozen, key="card_correct"):
-            _decide(job, items, i, "correct")
+            _decide(job, items, i, "edited" if p.get("was_edited") else "correct")
         if actions.button("Edit", disabled=frozen, key="card_edit"):
             st.session_state.editing_url = p["url"]
             st.rerun()
         if actions.button("Remove", disabled=frozen, key="card_remove"):
             _decide(job, items, i, "removed")
+
+
+def _edit_fields(p: dict) -> dict:
+    """The card's details as inputs, in place of the plain text."""
+    k = zlib.crc32(p["url"].encode())      # one set of inputs per item
+    title = st.text_input("Title", value=p.get("title") or p.get("slack_file_name") or "",
+                          key=f"edit_title_{k}")
+    authors = st.text_input("Authors", value="; ".join(p.get("authors") or []),
+                            help="Last, First; Last, First", key=f"edit_authors_{k}")
+    c1, c2, c3 = st.columns([1, 2, 3])
+    year = c1.text_input("Year", value=p.get("year") or "", key=f"edit_year_{k}")
+    kind = p.get("item_type") if p.get("item_type") in _ITEM_TYPES else "journalArticle"
+    item_type = c2.selectbox("Type", _ITEM_TYPES, index=_ITEM_TYPES.index(kind),
+                             key=f"edit_type_{k}")
+    journal = c3.text_input("Journal or website", value=p.get("journal") or "",
+                            key=f"edit_journal_{k}")
+    return {"title": title.strip() or None,
+            "authors": [a.strip() for a in authors.split(";") if a.strip()],
+            "year": year.strip() or None, "item_type": item_type,
+            "journal": journal.strip() or None}
 
 
 def _field(label: str, value) -> str:
@@ -514,34 +548,6 @@ def _short_link(url: str) -> str:
     """'sciencedirect.com/topics/economics/instrumental-…' for display."""
     text = re.sub(r"^https?://(www\.)?", "", url)
     return text if len(text) <= 60 else text[:57] + "..."
-
-
-def _edit_form(job: scan.Job, items: list[dict], i: int) -> None:
-    p = items[i]
-    k = zlib.crc32(p["url"].encode())      # one set of fields per item
-    with st.form(key=f"edit_{k}", border=False):
-        title = st.text_input("Title", value=p.get("title") or p.get("slack_file_name") or "",
-                              key=f"edit_title_{k}")
-        authors = st.text_input("Authors", value="; ".join(p.get("authors") or []),
-                                help="Last, First; Last, First", key=f"edit_authors_{k}")
-        c1, c2 = st.columns(2)
-        year = c1.text_input("Year", value=p.get("year") or "", key=f"edit_year_{k}")
-        kind = p.get("item_type") if p.get("item_type") in _ITEM_TYPES else "journalArticle"
-        item_type = c2.selectbox("Type", _ITEM_TYPES, index=_ITEM_TYPES.index(kind))
-        journal = st.text_input("Journal, publisher, or website", value=p.get("journal") or "",
-                                key=f"edit_journal_{k}")
-        row = st.container(horizontal=True)
-        saved = row.form_submit_button("Save", type="primary")
-        cancelled = row.form_submit_button("Cancel")
-    if saved:
-        fields = {"title": title.strip() or None,
-                  "authors": [a.strip() for a in authors.split(";") if a.strip()],
-                  "year": year.strip() or None, "item_type": item_type,
-                  "journal": journal.strip() or None}
-        _decide(job, items, i, "edited", fields)
-    if cancelled:
-        st.session_state.pop("editing_url", None)
-        st.rerun()
 
 
 def _matching(items: list[dict], query: str) -> list[dict]:

@@ -220,8 +220,11 @@ def test_review_card_edit_saves_the_fields_and_uploads():
     at.text_input(key=f"edit_year_{k}").input("2023")
     _buttons(at)["Save"].click().run()
     p = _junk(job)
-    assert (p["decision"], p["title"], p["authors"], p["year"]) == \
-        ("edited", "The Real Title", ["Doe, Jane", "Roe, Rich"], "2023")
+    assert (p["title"], p["authors"], p["year"]) == \
+        ("The Real Title", ["Doe, Jane", "Roe, Rich"], "2023")
+    assert "decision" not in p and "Correct" in _buttons(at)   # back to the card
+    _buttons(at)["Correct"].click().run()
+    assert p["decision"] == "edited"
     assert p["include"] and "Upload 2 to Zotero" in _buttons(at)
 
 
