@@ -125,7 +125,8 @@ def test_results_stay_after_upload_and_more_can_be_uploaded():
     at = _page()
     text = _text(at)
     assert "Done · Uploaded 1" in text
-    assert "**Ready (1)**" in text                   # the results are still there
+    assert "**Ready" not in text                     # uploaded items leave Ready
+    assert "**Review (1)**" in text                  # Review stays
     assert "New search" in _buttons(at)
     assert "Upload 1 to Zotero" not in _buttons(at)   # nothing left selected
 
@@ -194,15 +195,17 @@ def test_review_card_correct_adds_the_item_to_the_upload():
     assert "Upload 2 to Zotero" in _buttons(at)
 
 
-@pytest.mark.parametrize("label, decision", [("Not a source", "not_source"),
-                                             ("Remove", "removed")])
-def test_review_card_rejections_leave_the_item_out(label, decision):
+def test_review_card_remove_leaves_the_item_out_and_can_be_undone():
     job = _scanned_job()
     at = _page()
-    _buttons(at)[label].click().run()
-    assert _junk(job)["decision"] == decision and not _junk(job)["include"]
+    assert "Not a source" not in _buttons(at)
+    _buttons(at)["Remove"].click().run()
+    assert _junk(job)["decision"] == "removed" and not _junk(job)["include"]
     assert "Upload 1 to Zotero" in _buttons(at)
-    assert "1 of 1 · 1 decided" in _text(at)
+    assert "Nothing left to review." in _text(at)
+    _buttons(at)["Undo"].click().run()
+    assert "decision" not in _junk(job)
+    assert "1 of 1 · 0 decided" in _text(at)
 
 
 def test_review_card_edit_saves_the_fields_and_uploads():

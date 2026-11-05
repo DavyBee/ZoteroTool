@@ -354,5 +354,7 @@ def test_decide_sets_and_clears_review_decisions():
     assert (p["decision"], p["title"], p["include"]) == ("edited", "Fixed", True)
     job.decide(p["url"], "removed")
     assert not p["include"]
+    with pytest.raises(AssertionError):
+        job.decide(p["url"], "not_source")
     job.decide(p["url"], None)
     assert "decision" not in p and not p["include"]

@@ -269,8 +269,7 @@ def _table(items: list[dict], key: str, review: bool, show_status: bool,
 
 # ── Review cards ──────────────────────────────────────────────────────────────
 
-_DECISION_LABELS = {"correct": "Correct", "edited": "Edited",
-                    "not_source": "Not a source", "removed": "Removed"}
+_DECISION_LABELS = {"correct": "Correct", "edited": "Edited"}
 _ITEM_TYPES = ["journalArticle", "report", "preprint", "book", "bookSection",
                "conferencePaper", "thesis", "webpage", "blogPost", "newspaperArticle"]
 
@@ -294,21 +293,40 @@ def _decide(job: scan.Job, items: list[dict], i: int, decision: str,
     st.rerun()
 
 
-def review_cards(job: scan.Job, items: list[dict], locked: bool) -> None:
+def review_cards(job: scan.Job, all_items: list[dict], locked: bool) -> None:
+    items = [q for q in all_items if q.get("decision") != "removed"]
+    removed = [q for q in all_items if q.get("decision") == "removed"]
+    if items:
+        _card(job, items, locked)
+    else:
+        st.caption("Nothing left to review.")
+    if removed:
+        with st.expander(f"Removed ({len(removed)})"):
+            for q in removed:
+                c1, c2 = st.columns([6, 1], vertical_alignment="center")
+                c1.write(q.get("title") or q.get("slack_file_name") or q["url"])
+                if c2.button("Undo", key=f"undo_{zlib.crc32(q['url'].encode())}",
+                             disabled=locked):
+                    job.decide(q["url"], None)
+                    _go_to(q["url"])
+                    st.rerun()
+
+
+def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
     urls = [p["url"] for p in items]
     current = st.session_state.get("card_url")
     i = urls.index(current) if current in urls else 0
     p = items[i]
 
     decided = sum(1 for q in items if q.get("decision"))
-    c1, c2, c3 = st.columns([1, 1, 6], vertical_alignment="center")
-    if c1.button("Previous", disabled=i == 0, key="card_prev"):
+    nav = st.container(horizontal=True, vertical_alignment="center")
+    if nav.button("Previous", disabled=i == 0, key="card_prev"):
         _go_to(urls[i - 1])
         st.rerun()
-    if c2.button("Next", disabled=i == len(items) - 1, key="card_next"):
+    if nav.button("Next", disabled=i == len(items) - 1, key="card_next"):
         _go_to(urls[i + 1])
         st.rerun()
-    c3.caption(f"{i + 1} of {len(items)} · {decided} decided")
+    nav.caption(f"{i + 1} of {len(items)} · {decided} decided")
 
     with st.container(border=True):
         status = [p.get("reason", "")]
@@ -317,7 +335,7 @@ def review_cards(job: scan.Job, items: list[dict], locked: bool) -> None:
         if p.get("zotero_key"):
             status.append("Uploaded")
         st.caption(" · ".join(s for s in status if s))
-        st.markdown(f"**{_md(p.get('title') or p.get('slack_file_name') or p['url'])}**")
+        st.markdown(f"#### {_md(p.get('title') or p.get('slack_file_name') or p['url'])}")
         meta = [_short_authors(p.get("authors") or []), p.get("year") or "",
                 p.get("journal") or ""]
         if any(meta):
@@ -336,15 +354,13 @@ def review_cards(job: scan.Job, items: list[dict], locked: bool) -> None:
         if st.session_state.get("editing_url") == p["url"] and not frozen:
             _edit_form(job, items, i)
             return
-        b1, b2, b3, b4, _ = st.columns([1, 1, 1, 1, 2])
-        if b1.button("Correct", type="primary", disabled=frozen, key="card_correct"):
+        actions = st.container(horizontal=True)
+        if actions.button("Correct", type="primary", disabled=frozen, key="card_correct"):
             _decide(job, items, i, "correct")
-        if b2.button("Edit", disabled=frozen, key="card_edit"):
+        if actions.button("Edit", disabled=frozen, key="card_edit"):
             st.session_state.editing_url = p["url"]
             st.rerun()
-        if b3.button("Not a source", disabled=frozen, key="card_not_source"):
-            _decide(job, items, i, "not_source")
-        if b4.button("Remove", disabled=frozen, key="card_remove"):
+        if actions.button("Remove", disabled=frozen, key="card_remove"):
             _decide(job, items, i, "removed")
 
 
@@ -361,9 +377,9 @@ def _edit_form(job: scan.Job, items: list[dict], i: int) -> None:
         item_type = c2.selectbox("Type", _ITEM_TYPES, index=_ITEM_TYPES.index(kind))
         journal = st.text_input("Journal or publisher", value=p.get("journal") or "",
                                 key=f"edit_journal_{k}")
-        save, cancel, _ = st.columns([1, 1, 6])
-        saved = save.form_submit_button("Save", type="primary")
-        cancelled = cancel.form_submit_button("Cancel")
+        row = st.container(horizontal=True)
+        saved = row.form_submit_button("Save", type="primary")
+        cancelled = row.form_submit_button("Cancel")
     if saved:
         fields = {"title": title.strip() or None,
                   "authors": [a.strip() for a in authors.split(";") if a.strip()],
@@ -425,12 +441,15 @@ def step_scan(job: scan.Job | None) -> None:
 
     query = st.text_input("Search results", placeholder="Title, author, journal, or link",
                           key="results_query")
+    # Uploaded items leave the Ready table; step 3 reports them.
+    ready = [p for p in ready if not p.get("zotero_key")]
     shown_ready, shown_review = _matching(ready, query), _matching(review, query)
     # A different key per search, so a ticked box can't carry over to the
     # wrong row when the list changes.
     suffix = zlib.crc32(query.strip().lower().encode())
 
-    st.markdown(f"**Ready ({_count(shown_ready, ready)})**")
+    if ready or not uploaded_any:
+        st.markdown(f"**Ready ({_count(shown_ready, ready)})**")
     if shown_ready:
         st.caption("Metadata found. Clear a box to leave an item out.")
         _table(shown_ready, f"t_ready_{suffix}", review=False,

@@ -405,10 +405,10 @@ class Job:
                     p["include"] = include
                     return
 
-    # Review decisions. Correct and Edit upload the item; Not a source and
-    # Remove leave it out (Remove: handled another way, such as the Zotero
-    # Connector, or simply not wanted).
-    DECISIONS = ("correct", "edited", "not_source", "removed")
+    # Review decisions. Correct and Edit upload the item; Remove leaves it out
+    # (not a source, handled another way such as the Zotero Connector, or
+    # simply not wanted).
+    DECISIONS = ("correct", "edited", "removed")
 
     def decide(self, url: str, decision: Optional[str],
                fields: Optional[dict] = None) -> None:
