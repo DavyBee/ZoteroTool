@@ -32,6 +32,11 @@ def _code_stamp() -> tuple:
 
 
 if getattr(sys, "_slack_to_zotero_code", None) != _code_stamp():
+    # Stop a scan still running on the old code, or its threads keep going
+    # unseen in the background.
+    _old_job = getattr(sys.modules.get("scan"), "_current", None)
+    if _old_job is not None and hasattr(_old_job, "stop"):
+        _old_job.stop()
     for _name in _LOCAL_MODULES:
         sys.modules.pop(_name, None)
     sys._slack_to_zotero_code = _code_stamp()

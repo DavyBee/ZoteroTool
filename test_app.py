@@ -137,11 +137,19 @@ def test_no_emoji_in_page_text():
 
 def test_changed_code_is_loaded_fresh(monkeypatch):
     saved = {m: sys.modules[m] for m in LOCAL_MODULES if m in sys.modules}
+    stopped = []
+
+    class RunningJob:
+        def stop(self):
+            stopped.append(True)
+
+    monkeypatch.setattr(scan, "_current", RunningJob())
     try:
         monkeypatch.setattr(sys, "_slack_to_zotero_code", ("old",), raising=False)
         at = _page()
         assert not at.exception
         assert sys.modules["scan"] is not saved["scan"]      # imported again
+        assert stopped == [True]                             # the old scan was stopped
         assert sys._slack_to_zotero_code == _code_stamp()
     finally:
         sys.modules.update(saved)
