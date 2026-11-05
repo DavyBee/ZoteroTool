@@ -50,7 +50,7 @@ def _scanned_job():
     papers = [{"url": "https://a.org/paper", "comments": []},
               {"url": "https://a.org/junk", "comments": []}]
     assert scan.start_job(papers, None, enrich=enrich,
-                          source={"label": "export.zip", "files": 3, "channel": "its-lit"})
+                          source={"label": "export.zip"})
     job = scan.current_job()
     _wait(job, scan.SCANNED)
     return job
@@ -90,7 +90,7 @@ def test_finished_scan_keeps_every_step_on_the_page():
     at = _page()                                     # a fresh session = a refresh
     assert not at.exception
     text = _text(at)
-    assert "Done · export.zip · #its-lit · 3 day-files · 2 links and documents" in text
+    assert "Done · export.zip" in text
     assert "1 ready · 1 review · 0 already in Zotero" in text
     assert "**Ready (1)**" in text and "**Review (1)**" in text
     assert "Upload 1 to Zotero" in _buttons(at)

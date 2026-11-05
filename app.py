@@ -103,14 +103,7 @@ def _plural(n: int, word: str) -> str:
 def step_export(job: scan.Job | None) -> None:
     if job is not None:
         step_header(1, "Slack export", DONE_STATE)
-        src = job.source
-        parts = [src.get("label") or "Slack export"]
-        if src.get("channel"):
-            parts.append(f"#{src['channel']}")
-        if src.get("files"):
-            parts.append(_plural(src["files"], "day-file"))
-        parts.append(f"{job.n_sources} links and documents")
-        summary(parts, done=True)
+        summary([job.source.get("label") or "Slack export"], done=True)
         if job.snapshot()["phase"] in (scan.SCANNED, scan.DONE, scan.FAILED):
             start_over_control()
         return
@@ -146,7 +139,7 @@ def step_export(job: scan.Job | None) -> None:
             st.info("No links or documents found in this export.")
             return
         label = files[0].name if len(files) == 1 else _plural(len(files), "file")
-        source = {"label": label, "files": len(day_files), "channel": chosen or None}
+        source = {"label": label}
         if not start_job(papers, source):
             st.warning("A scan or upload is already running.")
         st.rerun()
