@@ -10,11 +10,11 @@ This app adds the papers and links shared in the Eviction Lab's literature Slack
    - **Ready**: metadata was found. These are selected for upload. Clear the box on any you want to leave out.
    - **Review**: the app couldn't identify these, or they probably aren't sources. Each row gives the reason. Nothing here is uploaded unless you select it.
    - **Already in Zotero**: these are skipped. The table shows what matched (DOI, URL, or title) and links to the existing item.
-4. Click **Upload**.
+4. Click **Upload to Zotero**. The results stay on the page afterwards, with each item's status. You can select more items and upload again.
 
 Each uploaded item gets its metadata, the PDF when one could be downloaded, and a note with the Slack post and its replies. Tweets and other web pages are saved as web page items with their link. Nothing else is added to the library.
 
-The scan runs on the server, so refreshing the page or closing the tab doesn't stop it. Results stay until someone starts a new scan or the app restarts. If the app restarts before you upload, scan the export again; nothing is uploaded twice.
+The scan runs on the server, so refreshing the page or closing the tab doesn't stop it. Results stay until someone starts a new scan or the app restarts, which also happens when its code is updated. If the app restarts before you upload, scan the export again; nothing is uploaded twice.
 
 ## Review reasons
 
@@ -22,7 +22,7 @@ The scan runs on the server, so refreshing the page or closing the tab doesn't s
 | --- | --- |
 | Page could not be accessed | The site blocked the app, the page is gone, or it had too little text to identify. Adding it with the Zotero browser extension usually works. |
 | Title from Slack post only | Nothing was found online, so the item would use the title from the Slack post. |
-| Likely not a source | Probably nothing to keep, such as an image or a dead link. |
+| Likely not a source | Probably nothing to keep, such as an image, a dead link, or a link to another Slack message. |
 | Slack file could not be downloaded | The file's download link in the export has expired. |
 | PDF has no readable text | A PDF was found but its text couldn't be read. |
 | No metadata found | No lookup recognized the link. |

@@ -66,7 +66,10 @@ def _is_content(msg: dict) -> bool:
 # Query parameters that only track where a click came from. Dropping them makes
 # the same paper shared from a newsletter and from a browser look identical.
 _TRACKING_PARAMS = {"fbclid", "gclid", "dclid", "msclkid", "mc_cid", "mc_eid",
-                    "_hsenc", "_hsmi", "mkt_tok", "ref_src", "ref_url"}
+                    "_hsenc", "_hsmi", "mkt_tok", "ref_src", "ref_url",
+                    "casa_token", "dgcid"}     # the last two are Elsevier's
+# Parameters that only track on one site; elsewhere the name may mean something.
+_SITE_PARAMS = {"sciencedirect.com": {"via"}}
 # Twitter/X share links append ?s=20&t=<token>, which identify the sharer.
 _TWITTER_PARAMS = {"s", "t"}
 _TWITTER_HOSTS = {"twitter.com", "www.twitter.com", "x.com", "www.x.com",
@@ -126,14 +129,19 @@ def clean_url(url: str) -> str:
     if not parts.query:
         return url
     host = parts.netloc.lower()
+    site_params = set().union(*(names for site, names in _SITE_PARAMS.items()
+                                if host == site or host.endswith("." + site)))
+    if host in _TWITTER_HOSTS:
+        site_params |= _TWITTER_PARAMS
+
     def tracking(k: str) -> bool:
-        # lstrip(";"): some mailers mangle "&amp;utm_x" into "%3Butm_x".
-        k = k.lower().lstrip(";")
-        return k.startswith("utm_") or k in _TRACKING_PARAMS
+        # Mangled forms: "%3Butm_x" (from "&amp;utm_x") and "via%3Dihub="
+        # (an encoded "="), so compare the part before any "=".
+        k = k.lower().lstrip(";").split("=")[0]
+        return k.startswith("utm_") or k in _TRACKING_PARAMS or k in site_params
 
     kept = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
-            if not tracking(k)
-            and not (host in _TWITTER_HOSTS and k in _TWITTER_PARAMS)]
+            if not tracking(k)]
     return urlunsplit(parts._replace(query=urlencode(kept, doseq=True)))
 
 

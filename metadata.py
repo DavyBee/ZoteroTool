@@ -363,9 +363,12 @@ def lookup_doi(doi: str) -> Optional[tuple[str, dict]]:
     return None
 
 
-def _extract_pdf_text(pdf_bytes: bytes) -> str:
-    """The PDF's text, via pypdf. "" for a scanned PDF or one pypdf can't
-    read; the AI step then reads the first pages as images."""
+def _extract_pdf_text(pdf_bytes: bytes,
+                      max_chars: Optional[int] = None) -> str:
+    """The PDF's text, via pypdf, up to max_chars (config.LLM_PAGE_TEXT_CHARS
+    by default). Stops reading pages once it has that much: extracting a long
+    PDF is slow, and only the start is sent to the AI. "" for a scanned PDF or
+    one pypdf can't read; the AI step then reads the first pages as images."""
     import logging
     from io import BytesIO
     from pypdf import PdfReader
@@ -375,10 +378,18 @@ def _extract_pdf_text(pdf_bytes: bytes) -> str:
     # so silence the noise.
     logging.getLogger("pypdf").setLevel(logging.ERROR)
 
+    limit = max_chars or config.LLM_PAGE_TEXT_CHARS
     try:
         reader = PdfReader(BytesIO(pdf_bytes))
-        pages = (page.extract_text() or "" for page in reader.pages)
-        return "\n".join(p for p in pages if p).strip()
+        parts, total = [], 0
+        for page in reader.pages:
+            text = page.extract_text() or ""
+            if text:
+                parts.append(text)
+                total += len(text)
+            if total >= limit:
+                break
+        return "\n".join(parts).strip()
     except Exception:
         # Encrypted or unreadable: no text.
         return ""

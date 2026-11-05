@@ -297,3 +297,24 @@ def test_citoid_title_that_is_only_the_site_name_is_rejected():
 ])
 def test_journal_falls_back_to_publisher_only_for_reports_and_preprints(record, venue):
     assert metadata.crossref_to_fields({"title": ["T"], **record})["journal"] == venue
+
+
+def test_pdf_text_extraction_stops_after_enough_text(monkeypatch):
+    read = []
+
+    class Page:
+        def __init__(self, i):
+            self.i = i
+
+        def extract_text(self):
+            read.append(self.i)
+            return "x" * 1000
+
+    class Reader:
+        def __init__(self, _):
+            self.pages = [Page(i) for i in range(300)]
+
+    import pypdf
+    monkeypatch.setattr(pypdf, "PdfReader", Reader)
+    text = metadata._extract_pdf_text(b"%PDF", max_chars=5000)
+    assert len(read) == 5 and len(text) >= 5000

@@ -59,6 +59,11 @@ WORKFLOW_OLD = (
     ("https://example.org/search?s=20", "https://example.org/search?s=20"),
     ("https://example.org/p?id=1&fbclid=zz", "https://example.org/p?id=1"),
     ("https://example.org/plain", "https://example.org/plain"),
+    ("https://www.sciencedirect.com/science/article/pii/S1?casa_token=abc&via%3Dihub=&dgcid=x",
+     "https://www.sciencedirect.com/science/article/pii/S1"),
+    ("https://www.sciencedirect.com/science/article/pii/S1?via=ihub",
+     "https://www.sciencedirect.com/science/article/pii/S1"),
+    ("https://example.org/p?via=bus", "https://example.org/p?via=bus"),
 ])
 def test_clean_url(raw, expected):
     assert clean_url(raw) == expected

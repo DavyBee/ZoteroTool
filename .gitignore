@@ -14,3 +14,4 @@ its_lit_copy-DB
 *.jsonl*
 __pycache__
 .streamlit/secrets.toml
+.test-data/
