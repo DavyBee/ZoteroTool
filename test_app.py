@@ -98,7 +98,8 @@ def test_finished_scan_keeps_every_step_on_the_page():
     text = _text(at)
     assert "Done · export.zip" in text
     assert "1 ready · 1 review · 0 already in Zotero" in text
-    assert "Ready (1)" in [e.label for e in at.expander] and "**Review (1)**" in text
+    labels = [e.label for e in at.expander]
+    assert ["Ready (1)", "Left to review (1)", "Marked for upload (0)", "Removed (0)"] == labels[:4]
     assert "Upload 1 to Zotero" in _buttons(at)
 
 
@@ -126,7 +127,7 @@ def test_results_stay_after_upload_and_more_can_be_uploaded():
     text = _text(at)
     assert "Done · Uploaded 1" in text
     assert "**Ready" not in text                     # uploaded items leave Ready
-    assert "**Review (1)**" in text                  # Review stays
+    assert "Left to review (1)" in [e.label for e in at.expander]   # Review stays
     assert "New search" in _buttons(at)
     assert "Upload 1 to Zotero" not in _buttons(at)   # nothing left selected
 
@@ -174,8 +175,8 @@ def test_search_filters_the_results():
     _scanned_job()
     at = _page()
     at.text_input(key="results_query").input("paper").run()
-    text = _text(at)
-    assert "Ready (1)" in [e.label for e in at.expander] and "**Review (0 of 1)**" in text
+    labels = [e.label for e in at.expander]
+    assert "Ready (1)" in labels and "Left to review (0)" in labels
     at.text_input(key="results_query").input("nothing matches this").run()
     assert "Ready (0 of 1)" in [e.label for e in at.expander]
 

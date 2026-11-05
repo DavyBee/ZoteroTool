@@ -291,8 +291,10 @@ def review_section(job: scan.Job, items: list[dict], locked: bool) -> None:
     with st.expander(f"Left to review ({len(undecided)})", expanded=True,
                      key="exp_left"):
         if not undecided:
-            st.caption("All items reviewed.")
+            st.caption("All items reviewed." if items else "Nothing to review.")
         else:
+            st.caption("Could not be identified, or probably not a source. "
+                       "Only items marked ready for upload are uploaded.")
             view = st.radio("Review view", ["Cards", "Table"], horizontal=True,
                             label_visibility="collapsed", key="review_view")
             if view == "Cards":
@@ -306,9 +308,10 @@ def review_section(job: scan.Job, items: list[dict], locked: bool) -> None:
 def _decided_table(label: str, items: list[dict], job: scan.Job, locked: bool,
                    key: str) -> None:
     """A collapsed table of decided items; Undo sends selected rows back."""
-    if not items:
-        return
     with st.expander(f"{label} ({len(items)})", key=key):
+        if not items:
+            st.caption("None yet.")
+            return
         _item_table(job, items, f"t_{key}", locked, "decided")
 
 
@@ -585,7 +588,7 @@ def step_scan(job: scan.Job | None) -> None:
     locked = phase == scan.UPLOADING
 
     query = st.text_input("Search results", placeholder="Title, author, journal, or link",
-                          key="results_query")
+                          key="results_query", type="search", live=True) or ""
     # Uploaded items leave the Ready table; step 3 reports them.
     ready = [p for p in ready if not p.get("zotero_key")]
     shown_ready, shown_review = _matching(ready, query), _matching(review, query)
@@ -601,11 +604,7 @@ def step_scan(job: scan.Job | None) -> None:
                 _item_table(job, shown_ready, f"t_ready_{suffix}", locked, "ready",
                             show_status=uploaded_any)
 
-    st.markdown(f"**Review ({_count(shown_review, review)})**")
-    if shown_review:
-        st.caption("Could not be identified, or probably not a source. "
-                   "Only items marked ready for upload are uploaded.")
-        review_section(job, shown_review, locked)
+    review_section(job, shown_review, locked)
 
     if existing:
         with st.expander(f"Already in Zotero ({len(existing)})"):
