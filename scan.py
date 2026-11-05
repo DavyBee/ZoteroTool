@@ -229,8 +229,13 @@ class Job:
                  enrich: Callable[..., dict] = metadata.enrich_paper,
                  load_index: Optional[Callable[[], LibraryIndex]] = None,
                  refresh_index: Optional[Callable[[LibraryIndex], None]] = None,
-                 title_search: Callable[..., Optional[tuple]] = metadata.search_crossref_title):
+                 title_search: Callable[..., Optional[tuple]] = metadata.search_crossref_title,
+                 source: Optional[dict] = None):
         self.papers = papers
+        # What was scanned, for the page's summary: {"label", "files", "channel"}.
+        self.source = source or {}
+        self.n_sources = len(papers)
+        self.finished_at: Optional[float] = None
         self.anthropic_key = anthropic_key
         self.audit_log_path = audit_log_path
         self._enrich = enrich
@@ -287,6 +292,7 @@ class Job:
             except Exception as exc:
                 with self.lock:
                     self.fatal_error = f"Could not read the Zotero library. {exc}"
+                    self.finished_at = time.time()
                     self.phase = FAILED
                 return
             with self.lock:
@@ -330,6 +336,7 @@ class Job:
                     p["bucket"], p["reason"] = classify(p)
                     p["include"] = False
             self._merge_duplicates()
+            self.finished_at = time.time()
             self.phase = SCANNED
 
     def _merge_duplicates(self) -> None:
