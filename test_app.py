@@ -206,9 +206,7 @@ def test_review_card_remove_leaves_the_item_out_and_can_be_undone():
     assert "Upload 1 to Zotero" in _buttons(at)
     assert "All items reviewed." in _text(at)
     assert "Removed (1)" in [e.label for e in at.expander]
-    _buttons(at)["Undo"].click().run()
-    assert "decision" not in _junk(job)
-    assert "1 of 1" in _text(at)
+    assert _buttons(at)["Undo"].disabled             # until a row is ticked
 
 
 def test_review_card_edit_saves_the_fields_and_uploads():
@@ -303,4 +301,15 @@ def test_review_table_view_has_action_buttons():
     buttons = _buttons(at)
     assert not at.exception
     assert buttons["Mark for upload"].disabled and buttons["Remove"].disabled
-    assert buttons["Edit"].disabled                     # nothing selected yet
+    assert "Edit" not in buttons                        # edited in the table
+
+
+def test_editing_a_marked_item_in_the_table_records_the_edit():
+    import app as page
+    job = _scanned_job()
+    p = _junk(job)
+    job.decide(p["url"], "correct")
+    page.apply_review_edits(job, [p["url"]], {0: {"Title": "Better title", "Select": True}})
+    assert p["title"] == "Better title" and p["decision"] == "edited"
+    page.apply_review_edits(job, [p["url"]], {0: {"Select": True}})   # ticks alone change nothing
+    assert p["title"] == "Better title"

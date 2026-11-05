@@ -443,9 +443,14 @@ class Job:
         """Change a Review item's details without deciding on it yet."""
         with self.lock:
             for p in self.papers:
-                if p["url"] == url and p.get("bucket") == REVIEW:
+                if p["url"] == url and p.get("bucket") == REVIEW \
+                        and not p.get("zotero_key"):
+                    if all(p.get(k) == v for k, v in fields.items()):
+                        return
                     p.update(fields)
                     p["was_edited"] = True
+                    if p.get("decision") == "correct":
+                        p["decision"] = "edited"
                     return
 
     def selected(self) -> list[dict]:

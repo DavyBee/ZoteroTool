@@ -341,78 +341,98 @@ def review_section(job: scan.Job, items: list[dict], locked: bool) -> None:
 
 def _decided_table(label: str, items: list[dict], job: scan.Job, locked: bool,
                    key: str) -> None:
-    """A collapsed table of decided items, each with Undo to send it back."""
+    """A collapsed table of decided items; Undo sends selected rows back."""
     if not items:
         return
     with st.expander(f"{label} ({len(items)})", key=key):
-        widths = [1, 6, 3, 1, 1]
-        head = st.columns(widths)
-        for col, name in zip(head, ["Link", "Title", "Authors", "Year", ""]):
-            col.caption(name)
-        for q in items:
-            row = st.columns(widths, vertical_alignment="center")
-            row[0].markdown(f"[Open]({q['url']})")
-            row[1].write(q.get("title") or q.get("slack_file_name") or q["url"])
-            row[2].write(_short_authors(q.get("authors") or []))
-            row[3].write(q.get("year") or "")
-            if q.get("zotero_key"):
-                row[4].caption("Uploaded")
-            elif row[4].button("Undo", key=f"undo_{zlib.crc32(q['url'].encode())}",
-                               disabled=locked):
-                job.decide(q["url"], None)
-                _go_to(q["url"])
-                st.rerun()
+        _review_editor(job, items, f"t_{key}", locked, undo=True)
 
 
 def _bump_table() -> None:
-    """New table key after a change, so a selection can't move to other rows
-    as decided items leave the table."""
-    st.session_state.left_version = st.session_state.get("left_version", 0) + 1
+    """New table keys after an action, so ticks can't carry over to other
+    rows as items move between tables."""
+    st.session_state.table_version = st.session_state.get("table_version", 0) + 1
 
 
 def _review_table(job: scan.Job, items: list[dict], locked: bool) -> None:
-    """Undecided Review items as a table: select rows, then act on them."""
-    rows = [{"Link": p["url"], "Reason": p.get("reason", ""),
+    _review_editor(job, items, "t_left", locked, undo=False)
+
+
+def _review_editor(job: scan.Job, items: list[dict], name: str, locked: bool,
+                   undo: bool) -> None:
+    """Review items as an editable table, laid out like Ready: tick rows in
+    the first column, then act on them with the buttons below. Title,
+    authors, year, and journal can be changed in place."""
+    rows = [{"Select": False, "Link": p["url"], "Reason": p.get("reason", ""),
              "Title": p.get("title") or p.get("slack_file_name") or "",
-             "Authors": _short_authors(p.get("authors") or []),
+             "Authors": "; ".join(p.get("authors") or []),
              "Year": p.get("year") or "", "Journal": p.get("journal") or "",
              "Summary": p.get("summary") or ""} for p in items]
-    event = st.dataframe(
-        rows, key=f"t_left_{st.session_state.get('left_version', 0)}", hide_index=True,
-        on_select="rerun", selection_mode="multi-row",
+    urls = [p["url"] for p in items]
+    key = f"{name}_{st.session_state.get('table_version', 0)}"
+    columns = list(rows[0])
+    st.data_editor(
+        rows, key=key, hide_index=True,
+        disabled=columns if locked else ["Link", "Reason", "Summary"],
         column_config={
+            "Select": st.column_config.CheckboxColumn("", width=40),
             "Link": st.column_config.LinkColumn(display_text="Open", width=50),
-            "Reason": st.column_config.TextColumn(width=160),
+            "Reason": st.column_config.TextColumn(width=170),
             "Title": st.column_config.TextColumn(width="medium"),
-            "Authors": st.column_config.TextColumn(width=150),
+            "Authors": st.column_config.TextColumn(width=180, help="Last, First; Last, First"),
             "Year": st.column_config.TextColumn(width=50),
-            "Journal": st.column_config.TextColumn(width=130),
-            "Summary": st.column_config.TextColumn(width=200),
-        })
-    chosen = [items[i] for i in event.selection.rows if i < len(items)]
+            "Journal": st.column_config.TextColumn(width=150),
+            "Summary": st.column_config.TextColumn(width=220),
+        },
+        on_change=_on_review_edit, args=(key, urls),
+    )
+    changes = st.session_state.get(key, {}).get("edited_rows", {})
+    chosen = [items[int(r)] for r, c in changes.items()
+              if c.get("Select") and int(r) < len(items)
+              and not items[int(r)].get("zotero_key")]
     n = len(chosen)
-
-    editing = st.session_state.get("editing_url")
-    if editing in [p["url"] for p in items] and not locked:
-        _edit_form(job, items, [p["url"] for p in items].index(editing))
-        return
-
-    st.caption("Select rows, then choose an action.")
     bar = st.container(horizontal=True)
+    if undo:
+        if bar.button(f"Undo ({n})" if n else "Undo", disabled=locked or not n,
+                      key=f"{name}_undo"):
+            for p in chosen:
+                job.decide(p["url"], None)
+            _bump_table()
+            st.rerun()
+        return
     if bar.button(f"Mark for upload ({n})" if n else "Mark for upload", type="primary",
-                  disabled=locked or not n, key="table_mark"):
+                  disabled=locked or not n, key=f"{name}_mark"):
         mark_for_upload(job, chosen)
         _bump_table()
         st.rerun()
-    if bar.button("Edit", disabled=locked or n != 1, key="table_edit"):
-        st.session_state.editing_url = chosen[0]["url"]
-        st.rerun()
     if bar.button(f"Remove ({n})" if n else "Remove", disabled=locked or not n,
-                  key="table_remove"):
+                  key=f"{name}_remove"):
         for p in chosen:
             job.decide(p["url"], "removed")
         _bump_table()
         st.rerun()
+
+
+def _on_review_edit(key: str, urls: list[str]) -> None:
+    job = scan.current_job()
+    if job is not None:
+        apply_review_edits(job, urls, st.session_state[key]["edited_rows"])
+
+
+def apply_review_edits(job: scan.Job, urls: list[str], edited_rows: dict) -> None:
+    """Save details typed into a review table."""
+    for row, change in edited_rows.items():
+        fields = {}
+        if "Title" in change:
+            fields["title"] = change["Title"].strip() or None
+        if "Authors" in change:
+            fields["authors"] = [a.strip() for a in change["Authors"].split(";") if a.strip()]
+        if "Year" in change:
+            fields["year"] = change["Year"].strip() or None
+        if "Journal" in change:
+            fields["journal"] = change["Journal"].strip() or None
+        if fields:
+            job.edit(urls[int(row)], fields)
 
 
 def mark_for_upload(job: scan.Job, items: list[dict]) -> None:
