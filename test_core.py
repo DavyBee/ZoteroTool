@@ -415,6 +415,7 @@ def test_enrich_flags_pdf_too_large(blob_env, monkeypatch):
     monkeypatch.setattr(metadata, "save_pdf",
                         lambda url: (str(big), len(_PDF_BYTES)))
     monkeypatch.setattr(metadata, "fetch_translator", lambda url: None)
+    monkeypatch.setattr(metadata, "fetch_citation_metadata", lambda url: None)
     fields = metadata.enrich_paper({"url": "https://x.example/huge"}, None)
     assert fields["pdf_too_large"] is True
     assert fields["metadata_source"] == "pdf_saved"
@@ -429,6 +430,7 @@ def test_enrich_leaves_small_pdfs_unflagged(blob_env, monkeypatch):
     monkeypatch.setattr(metadata, "save_pdf",
                         lambda url: (str(small), len(_PDF_BYTES)))
     monkeypatch.setattr(metadata, "fetch_translator", lambda url: None)
+    monkeypatch.setattr(metadata, "fetch_citation_metadata", lambda url: None)
     fields = metadata.enrich_paper({"url": "https://x.example/small"}, None)
     assert not fields.get("pdf_too_large")
 

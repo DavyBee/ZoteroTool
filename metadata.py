@@ -31,7 +31,8 @@ import threading
 import time
 from datetime import datetime, timezone
 from typing import Optional
-from urllib.parse import quote as url_quote
+from html.parser import HTMLParser
+from urllib.parse import parse_qsl, quote as url_quote, urlsplit
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
@@ -101,6 +102,142 @@ def _fetch_page_text(url: str) -> tuple[str, str]:
     return "", "ok"             # reachable (2xx) but no extractable text
 
 
+# ── Citation tags on the page ─────────────────────────────────────────────────
+# Publishers mark up article pages with Highwire Press "citation_*" meta tags
+# (citation_title, citation_author, citation_doi, ...). Google Scholar's
+# inclusion guidelines are built on them, so publishers keep them current; they
+# are a long-standing convention, not something specific to one site.
+# https://scholar.google.com/intl/en/scholar/inclusion.html#indexing
+
+class _MetaTagParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.tags: dict[str, list[str]] = {}
+
+    def handle_starttag(self, tag, attrs):
+        if tag != "meta":
+            return
+        a = {k.lower(): (v or "") for k, v in attrs}
+        name = (a.get("name") or a.get("property") or "").strip().lower()
+        content = " ".join(a.get("content", "").split())
+        if name.startswith("citation_") and content:
+            self.tags.setdefault(name, []).append(content)
+
+
+def parse_citation_tags(html_bytes: bytes) -> dict[str, list[str]]:
+    parser = _MetaTagParser()
+    try:
+        parser.feed(html_bytes.decode("utf-8", errors="replace"))
+        parser.close()
+    except Exception:
+        pass
+    return parser.tags
+
+
+_NAME_PARTICLES = {"van", "von", "de", "del", "della", "der", "den", "di", "da",
+                   "du", "la", "le", "ter", "dos", "das", "st", "st."}
+_NAME_SUFFIXES = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv"}
+
+
+def _tag_author(name: str) -> str:
+    """'Rebecca Diamond' → 'Diamond, Rebecca'; 'Clément de Chaisemartin' →
+    'de Chaisemartin, Clément'. Names already in 'Last, First' form are kept."""
+    name = " ".join(name.split())
+    if "," in name or " " not in name:
+        return name
+    parts = name.split()
+    suffix = parts.pop() if parts[-1].lower() in _NAME_SUFFIXES and len(parts) > 2 else ""
+    i = len(parts) - 1
+    while i > 1 and parts[i - 1].lower() in _NAME_PARTICLES:
+        i -= 1
+    first = " ".join(parts[:i] + ([suffix] if suffix else []))
+    return f"{' '.join(parts[i:])}, {first}"
+
+
+def tags_to_fields(tags: dict[str, list[str]]) -> Optional[dict]:
+    """Bibliographic fields from citation tags, or None unless the page names
+    both a title and at least one author."""
+    def one(*names):
+        for n in names:
+            if tags.get(n):
+                return tags[n][0]
+        return None
+
+    title = one("citation_title")
+    authors = [_tag_author(a) for a in tags.get("citation_author", []) if a.strip()]
+    if not title or not authors:
+        return None
+    if tags.get("citation_arxiv_id"):
+        item_type, venue = "preprint", "arXiv"
+    elif one("citation_technical_report_institution", "citation_technical_report_number"):
+        item_type, venue = "report", one("citation_technical_report_institution")
+    elif one("citation_journal_title"):
+        item_type, venue = "journalArticle", one("citation_journal_title")
+    elif one("citation_conference_title"):
+        item_type, venue = "conferencePaper", one("citation_conference_title")
+    elif one("citation_dissertation_institution"):
+        item_type, venue = "thesis", one("citation_dissertation_institution")
+    elif one("citation_inbook_title", "citation_book_title"):
+        item_type, venue = "bookSection", one("citation_inbook_title", "citation_book_title")
+    else:
+        item_type, venue = "webpage", None
+    first, last = one("citation_firstpage"), one("citation_lastpage")
+    date = one("citation_publication_date", "citation_date", "citation_online_date",
+               "citation_cover_date", "citation_year")
+    year = re.search(r"\b(1[5-9]\d\d|20\d\d)\b", date or "")
+    return {
+        "title": title, "authors": authors, "item_type": item_type, "journal": venue,
+        "year": year.group(1) if year else None,
+        "volume": one("citation_volume"), "issue": one("citation_issue"),
+        "pages": f"{first}-{last}" if first and last else first,
+        "publisher": one("citation_publisher"), "isbn": one("citation_isbn"),
+        "language": one("citation_language"), "abstract": one("citation_abstract"),
+        "doi": _clean_doi(one("citation_doi")),
+    }
+
+
+def fetch_citation_metadata(url: str) -> Optional[tuple[str, dict]]:
+    """Metadata from the page's citation tags. A DOI found there goes to
+    CrossRef, and is trusted only if CrossRef's title matches the page's.
+    Returns (metadata_source, fields) or None."""
+    from zotero_index import titles_match
+    raw, content_type, _status = http_fetch.fetch(url, max_bytes=2_000_000)
+    if raw is None or "html" not in (content_type or "").lower():
+        return None
+    tags = parse_citation_tags(raw)
+    doi = _clean_doi((tags.get("citation_doi") or [None])[0])
+    if doi:
+        found = lookup_doi(doi)
+        page_title = (tags.get("citation_title") or [None])[0]
+        if found and (not page_title or titles_match(found[1].get("title"), page_title)):
+            return found
+    fields = tags_to_fields(tags)
+    return ("citation_tags", fields) if fields else None
+
+
+# ── SSRN ──────────────────────────────────────────────────────────────────────
+# SSRN blocks automated readers (Citoid included), but every SSRN paper has a
+# DOI built from its abstract id: 10.2139/ssrn.<id>. That is SSRN's own scheme.
+# The DOI is only used if CrossRef has a record for it.
+
+_SSRN_PATH_RE = re.compile(r"/abstract=(\d+)", re.I)
+
+
+def ssrn_doi(url: str) -> Optional[str]:
+    parts = urlsplit(url)
+    host = parts.netloc.lower()
+    if not (host == "ssrn.com" or host.endswith(".ssrn.com")):
+        return None
+    params = {k.lower(): v for k, v in parse_qsl(parts.query)}
+    abstract_id = params.get("abstract_id") or params.get("abstractid")
+    if not abstract_id:
+        m = _SSRN_PATH_RE.search(parts.path)
+        abstract_id = m.group(1) if m else None
+    if abstract_id and abstract_id.isdigit():
+        return f"10.2139/ssrn.{abstract_id}"
+    return None
+
+
 # ── Citoid (Wikimedia's hosted Zotero translator) ─────────────────────────────
 
 # Per-run cache (url → first Zotero item, or None) and a throttle timestamp. A
@@ -113,6 +250,9 @@ _last_citoid_call = 0.0
 # threads by reserving each request's start time in turn.
 _citoid_lock = threading.Lock()
 CITOID_ATTEMPTS = 3
+# Room for models that think before answering (the reply itself is ~300 tokens).
+# Only tokens actually generated are billed.
+LLM_MAX_TOKENS = 4000
 CITOID_RETRY_WAIT = 3.0      # seconds; multiplied by the attempt number
 
 
@@ -572,7 +712,7 @@ def fetch_llm(url: str, comments: list[Comment],
         client = anthropic_sdk.Anthropic(api_key=anthropic_key)
         messages = [{"role": "user", "content": content}]
         try:
-            resp = client.messages.create(model=model, max_tokens=800,
+            resp = client.messages.create(model=model, max_tokens=LLM_MAX_TOKENS,
                                            messages=messages)
         except Exception as e:
             # Model retired/deprecated (404) → self-heal: switch to a current model
@@ -583,9 +723,15 @@ def fetch_llm(url: str, comments: list[Comment],
                 raise
             audit["model"] = model = new_model
             audit["model_auto_switched"] = True
-            resp = client.messages.create(model=model, max_tokens=800,
+            resp = client.messages.create(model=model, max_tokens=LLM_MAX_TOKENS,
                                            messages=messages)
-        raw_text = resp.content[0].text
+        # Read the answer by block type: newer models put a thinking block
+        # first, so content[0] is not necessarily the text.
+        raw_text = "".join(getattr(b, "text", "") for b in resp.content
+                           if getattr(b, "type", "") == "text")
+        if not raw_text.strip():
+            audit["error"] = f"no text in response (stop_reason={resp.stop_reason})"
+            return None
         audit["response"] = raw_text
         # Some models (notably Haiku) emit valid JSON followed by explanatory
         # prose ("Note: ..."). Pull just the first balanced JSON object.
@@ -837,6 +983,25 @@ def enrich_paper(paper: dict, anthropic_key: Optional[str] = None,
             _merge_truthy(fields, data)
             fields["metadata_source"] = source
             return fields
+
+    # 1b. SSRN: the DOI follows from the abstract id (SSRN blocks page reads).
+    if not doi:
+        guessed = ssrn_doi(url)
+        result = lookup_doi(guessed) if guessed else None
+        if result:
+            source, data = result
+            _merge_truthy(fields, data)
+            fields["metadata_source"] = source
+            return fields
+
+    # 1c. Citation tags on the page (fetched once and shared with the PDF
+    #     search and the AI step via http_fetch's cache).
+    result = fetch_citation_metadata(url)
+    if result:
+        source, data = result
+        _merge_truthy(fields, data)
+        fields["metadata_source"] = source
+        return fields
 
     # 2. Citoid — Wikimedia's hosted Zotero translator — on the URL.
     raw = fetch_translator(url)

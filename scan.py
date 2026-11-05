@@ -140,6 +140,8 @@ def collect_papers(paths: list[str], user_map: dict[str, str]) -> list[dict]:
 # ── Sorting results ───────────────────────────────────────────────────────────
 
 READY, REVIEW, EXISTING = "ready", "review", "existing"
+# Sources that found real bibliographic metadata.
+FOUND_SOURCES = ("crossref_doi", "translator", "citation_tags", "llm")
 
 
 def classify(paper: dict) -> tuple[str, str]:
@@ -152,13 +154,13 @@ def classify(paper: dict) -> tuple[str, str]:
         return REVIEW, "Not scanned"
     if paper.get("scan_error"):
         return REVIEW, "Error during scan"
-    if src in ("crossref_doi", "translator", "llm") and paper.get("title") \
+    if src in FOUND_SOURCES and paper.get("title") \
             and paper.get("hint_mismatch"):
         return REVIEW, "Title differs from Slack post"
-    if src in ("crossref_doi", "translator", "llm") and paper.get("title") \
+    if src in FOUND_SOURCES and paper.get("title") \
             and paper.get("item_type") == "webpage" and not paper.get("authors"):
         return REVIEW, "Web page, not a paper"
-    if src in ("crossref_doi", "translator"):
+    if src in ("crossref_doi", "translator", "citation_tags"):
         if paper.get("title"):
             return READY, ""
         return REVIEW, "No title found"
@@ -191,7 +193,7 @@ def apply_hints(paper: dict, title_search: Callable[..., Optional[tuple]]) -> No
     hint = hints.get("title")
     if not hint:
         return
-    if paper.get("metadata_source") in ("crossref_doi", "translator", "llm") \
+    if paper.get("metadata_source") in FOUND_SOURCES \
             and paper.get("title"):
         if titles_match(paper["title"], hint):
             paper["hint_confirmed"] = True

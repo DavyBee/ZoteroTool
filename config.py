@@ -77,7 +77,7 @@ CITOID_MIN_INTERVAL = 1.0
 
 # ── LLM ───────────────────────────────────────────────────────────────────────
 
-LLM_MODEL_DEFAULT = "claude-haiku-4-5"
+LLM_MODEL_DEFAULT = "claude-haiku-5-5"
 
 # Max characters of fetched page text handed to the LLM stage (HTML stripped of
 # tags, or text extracted from a PDF). Generous on purpose: these runs are
