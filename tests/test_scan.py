@@ -525,3 +525,26 @@ def test_a_search_that_fails_while_finishing_still_ends(monkeypatch):
     job.start()
     _wait(job, scan.SCANNED)
     assert "ZeroDivisionError" in job.snapshot()["fatal_error"]
+
+
+def test_upload_still_checks_known_zotero_items_when_zotero_cant_be_refreshed():
+    from slack_to_zotero.zotero_index import LibraryIndex
+    ix = LibraryIndex()
+    ix.add({"key": "Z1", "title": "Known Paper", "date": "2024", "itemType": "journalArticle",
+            "creators": [{"lastName": "Doe"}]})
+
+    def refresh(index):
+        raise OSError("network down")
+
+    job = scan.Job(_papers(1), None, title_search=lambda *a: None, load_index=lambda: ix,
+                   refresh_index=refresh, enrich=lambda p, *a: {"metadata_source": "none"})
+    job.start()
+    _wait(job, scan.SCANNED)
+    url = job.papers[0]["url"]
+    job.edit(url, {"title": "Known Paper", "year": "2024", "authors": ["Doe, Jane"],
+                   "item_type": "journalArticle"})
+    job.decide(url, "edited")
+    zot = FakeZotero()
+    job.start_upload(lambda: zot)
+    _wait(job, scan.DONE)
+    assert zot.created == [] and job.papers[0]["bucket"] == scan.EXISTING

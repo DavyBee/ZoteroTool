@@ -513,19 +513,17 @@ class Job:
         """Drop anything added to Zotero since the scan read it, and anything
         that is the same work as another item in this upload (two items can
         be edited into one). Ready items are kept over Review items."""
-        refreshed = False
         if self._refresh_index is not None and self.index is not None:
             try:
                 self._refresh_index(self.index)
-                refreshed = True
             except Exception:
-                pass                       # the upload itself will report it
+                pass                       # still check against what was read before
         from .zotero_client import paper_to_zotero_item
         batch = LibraryIndex()
         out = []
         with self.lock:
             for p in sorted(papers, key=lambda p: p.get("bucket") != READY):
-                hit = self.index.match(p) if refreshed else None
+                hit = self.index.match(p) if self.index is not None else None
                 if hit:
                     self._mark_existing(p, hit)
                     continue
