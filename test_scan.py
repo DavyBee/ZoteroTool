@@ -341,3 +341,99 @@ def test_every_title_is_cleaned_after_lookup():
     p = {"url": "https://a.org", "title": "Cracking Down, Pricing Up <br>", "authors": ["A"]}
     scan._tidy(p)
     assert p["title"] == "Cracking Down, Pricing Up"
+
+
+def test_decide_sets_and_clears_review_decisions():
+    job = scan.Job([{"url": "https://a.org/x", "comments": []}], None,
+                   title_search=lambda *a: None,
+                   enrich=lambda p, *a: {"metadata_source": "needs_manual"})
+    job.start()
+    _wait(job, scan.SCANNED)
+    [p] = job.papers
+    job.decide(p["url"], "edited", {"title": "Fixed"})
+    assert (p["decision"], p["title"], p["include"]) == ("edited", "Fixed", True)
+    job.decide(p["url"], "removed")
+    assert not p["include"]
+    with pytest.raises(AssertionError):
+        job.decide(p["url"], "not_source")
+    job.decide(p["url"], None)
+    assert "decision" not in p and not p["include"]
+
+
+def test_web_page_without_a_site_name_gets_its_domain():
+    p = {"url": "https://www.sciencedirect.com/topics/economics/iv", "title": "IV",
+         "item_type": "webpage", "metadata_source": "link"}
+    scan._prepare_for_upload(p)
+    assert p["journal"] == "sciencedirect.com"
+    q = {"url": "https://a.org/x", "title": "T", "item_type": "journalArticle"}
+    scan._prepare_for_upload(q)
+    assert "journal" not in q
+
+
+def test_ready_items_can_be_edited_moved_to_review_or_removed():
+    job = scan.Job(_papers(3), None, title_search=lambda *a: None,
+                   enrich=lambda p, *a: {"metadata_source": "translator", "title": p["url"]})
+    job.start()
+    _wait(job, scan.SCANNED)
+    a, b, c = job.papers
+    job.edit(a["url"], {"title": "Fixed"})
+    assert (a["title"], a["bucket"], a["include"]) == ("Fixed", scan.READY, True)
+    job.move_to_review(b["url"])
+    assert (b["bucket"], b["reason"], b["include"]) == (scan.REVIEW, "Moved from Ready", False)
+    job.move_to_review(c["url"])
+    job.decide(c["url"], "removed")
+    assert (c["bucket"], c["decision"], c["include"]) == (scan.REVIEW, "removed", False)
+    assert [p["url"] for p in job.selected()] == [a["url"]]
+
+
+def test_pause_holds_the_search_and_resume_finishes_it():
+    job = scan.Job(_papers(3), None, title_search=lambda *a: None,
+                   enrich=lambda p, *a: {"metadata_source": "translator", "title": p["url"]})
+    job.pause()
+    job.start()
+    time.sleep(0.1)
+    snap = job.snapshot()
+    assert snap["paused"] and snap["done"] == 0 and snap["phase"] == scan.SCANNING
+    job.resume()
+    _wait(job, scan.SCANNED)
+    assert all(p["bucket"] == scan.READY for p in job.papers)
+
+
+def test_stop_discards_the_search():
+    job = scan.Job(_papers(3), None, title_search=lambda *a: None,
+                   enrich=lambda p, *a: {"metadata_source": "translator", "title": p["url"]})
+    job.pause()
+    scan._current = job
+    job.start()
+    scan.discard_job()
+    assert scan.current_job() is None
+    _wait(job, scan.SCANNED)                      # its threads finish and exit
+    assert job.snapshot()["done"] == 3
+
+
+def test_saved_results_load_as_a_finished_search_without_lookups():
+    job = scan.Job(_papers(3), None, title_search=lambda *a: None,
+                   enrich=lambda p, *a: {"metadata_source": "translator", "title": f"Paper {p['url'][-1]}",
+                                         "authors": ["Doe, Jane"], "year": "2024",
+                                         "item_type": "journalArticle", "doi": f"10.1/{p['url'][-1]}"})
+    job.start()
+    _wait(job, scan.SCANNED)
+    job.papers[0]["zotero_key"] = "ABC"              # upload outcomes aren't saved
+    data = scan.saved_results(job.papers, "full.json")
+    papers, label = scan.read_saved_results(data)
+    assert label == "full.json" and "zotero_key" not in papers[0]
+    assert scan.read_saved_results(b'[{"type": "message"}]') is None   # a Slack day-file
+    scan._current = None
+    assert scan.load_saved_job(papers, label)
+    loaded = scan.current_job()
+    _wait(loaded, scan.SCANNED)
+    assert [p["bucket"] for p in loaded.papers] == [scan.READY] * 3
+    scan._current = None
+
+
+def test_html_entities_are_cleaned_from_journals_and_authors():
+    p = {"title": "Rent &amp; Eviction", "journal": "City &amp; Community",
+         "authors": ["O&#39;Brien, Ann"], "item_type": "journalArticle", "year": "2024"}
+    scan._tidy(p)
+    assert (p["title"], p["journal"], p["authors"]) == \
+        ("Rent & Eviction", "City & Community", ["O'Brien, Ann"])

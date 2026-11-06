@@ -7,14 +7,14 @@ This app adds the papers and links shared in the Eviction Lab's literature Slack
 1. Upload the channel's Slack export: the .zip file, or the channel's daily .json files.
 2. Click **Search for sources**. The app reads every link and uploaded document and looks up its title, authors, year, and journal. A few months of messages take a minute or two.
 3. Check the results, which are sorted into three groups:
-   - **Ready**: metadata was found. These are selected for upload. Clear the box on any you want to leave out.
-   - **Review**: the app couldn't identify these, or they probably aren't sources. Each row gives the reason. Nothing here is uploaded unless you select it.
+   - **Ready**: metadata was found. These are uploaded. Fix details by double-clicking a cell, or tick rows to **Move to Review** or **Remove**.
+   - **Review**: the app couldn't identify these, or they probably aren't sources. They are shown one at a time with the reason. Choose **Mark ready for upload**, **Edit** its details in place, or **Remove** for each. The Table view does the same for several items at once; edits there are kept when you press **Save edits**. Only items marked ready for upload are uploaded.
    - **Already in Zotero**: these are skipped. The table shows what matched (DOI, URL, or title) and links to the existing item.
-4. Click **Upload to Zotero**. The results stay on the page afterwards, with each item's status. You can select more items and upload again.
+4. Click **Upload to Zotero**. If Review items aren't marked ready for upload, the app asks first. They stay in Review afterwards, to upload or remove later.
 
 Each uploaded item gets its metadata, the PDF when one could be downloaded, and a note with the Slack post and its replies. Tweets and other web pages are saved as web page items with their link. When both a working paper and its published version are shared, they are kept as separate items, and the working paper's title ends with "(working paper)". Nothing else is added to the library.
 
-The search runs on the server, so refreshing the page or closing the tab doesn't stop it. Results stay until someone starts a new search or the app restarts, which also happens when its code is updated. If the app restarts before you upload, search the export again; nothing is uploaded twice.
+The search runs on the server, so refreshing the page or closing the tab doesn't stop it. **Pause** holds it and **Resume** continues; **Stop** ends it and clears its results. Results stay until someone starts a new search or the app restarts, which also happens when its code is updated. If the app restarts before you upload, search the export again; nothing is uploaded twice.
 
 ## Review reasons
 
@@ -26,7 +26,8 @@ The search runs on the server, so refreshing the page or closing the tab doesn't
 | Slack file could not be downloaded | The file's download link in the export has expired. |
 | PDF has no readable text | A PDF was found but its text couldn't be read. |
 | No metadata found | No lookup recognized the link. |
-| Not searched, Error during search | The search was stopped or hit an error before reaching this item. Searching again usually fixes it. |
+| Moved from Ready | It was moved from Ready to Review by hand. |
+| Not searched, Error during search | The search hit an error before reaching this item. Searching again usually fixes it. |
 
 ## Hosting
 

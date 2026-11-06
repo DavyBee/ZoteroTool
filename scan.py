@@ -11,12 +11,14 @@ No Streamlit imports here, so the whole flow is testable without the UI.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import threading
 import time
 import traceback
 import zipfile
+from urllib.parse import urlsplit
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Optional
@@ -251,6 +253,8 @@ class Job:
         self.done = 0
         self.log: deque[str] = deque(maxlen=1000)
         self.stop_requested = False
+        self._running = threading.Event()        # cleared while paused
+        self._running.set()
         self.started_at = time.time()
         self.upload_result: Optional[dict] = None
         self.fatal_error: Optional[str] = None
@@ -266,6 +270,15 @@ class Job:
     def stop(self) -> None:
         with self.lock:
             self.stop_requested = True
+        self._running.set()                      # let paused workers finish
+
+    def pause(self) -> None:
+        """Hold the search after the items in progress; resume() continues it."""
+        if not self.stop_requested:
+            self._running.clear()
+
+    def resume(self) -> None:
+        self._running.set()
 
     def _mark_existing(self, paper: dict, hit: tuple[str, str]) -> None:
         paper["existing_key"], paper["existing_how"] = hit
@@ -276,6 +289,7 @@ class Job:
         paper["include"] = False
 
     def _enrich_one(self, paper: dict) -> dict:
+        self._running.wait()
         if self.stop_requested:
             return {"metadata_source": "none", "not_scanned": True}
         try:
@@ -405,6 +419,52 @@ class Job:
                     p["include"] = include
                     return
 
+    # Review decisions. Correct and Edit upload the item; Remove leaves it out
+    # (not a source, handled another way such as the Zotero Connector, or
+    # simply not wanted).
+    DECISIONS = ("correct", "edited", "removed")
+
+    def decide(self, url: str, decision: Optional[str],
+               fields: Optional[dict] = None) -> None:
+        """Record a review decision (None clears it), applying edited fields."""
+        assert decision is None or decision in self.DECISIONS
+        with self.lock:
+            for p in self.papers:
+                if p["url"] == url and p.get("bucket") == REVIEW:
+                    if fields:
+                        p.update({k: v for k, v in fields.items()})
+                    if decision is None:
+                        p.pop("decision", None)
+                    else:
+                        p["decision"] = decision
+                    p["include"] = decision in ("correct", "edited")
+                    return
+
+    def move_to_review(self, url: str) -> None:
+        """Send a Ready item to Review, to decide on it there."""
+        with self.lock:
+            for p in self.papers:
+                if p["url"] == url and p.get("bucket") == READY \
+                        and not p.get("zotero_key"):
+                    p["bucket"], p["reason"] = REVIEW, "Moved from Ready"
+                    p["include"] = False
+                    p.pop("decision", None)
+                    return
+
+    def edit(self, url: str, fields: dict) -> None:
+        """Change a Ready or Review item's details (without deciding on it)."""
+        with self.lock:
+            for p in self.papers:
+                if p["url"] == url and p.get("bucket") in (READY, REVIEW) \
+                        and not p.get("zotero_key"):
+                    if all(p.get(k) == v for k, v in fields.items()):
+                        return
+                    p.update(fields)
+                    p["was_edited"] = True
+                    if p.get("decision") == "correct":
+                        p["decision"] = "edited"
+                    return
+
     def selected(self) -> list[dict]:
         with self.lock:
             return [p for p in self.papers
@@ -484,7 +544,8 @@ class Job:
                     "log": list(self.log), "fatal_error": self.fatal_error,
                     "upload_result": self.upload_result,
                     "skipped_existing": self.skipped_existing,
-                    "stopping": self.stop_requested and self.phase == SCANNING}
+                    "stopping": self.stop_requested and self.phase == SCANNING,
+                    "paused": not self._running.is_set() and self.phase == SCANNING}
 
 
 def _same_work(p: dict, q: dict, t: str, y: Optional[str]) -> bool:
@@ -507,11 +568,20 @@ def _tidy(p: dict) -> None:
     """Clean the title, whichever lookup produced it (HTML tags such as <br>
     turn up in titles). An "article" with no authors, no year, and no DOI is
     usually a journal homepage or issue page; save it as a web page."""
-    if p.get("title"):
-        p["title"] = metadata.clean_title(p["title"])
+    for field in ("title", "journal", "publisher"):    # also "&amp;" and the like
+        if p.get(field):
+            p[field] = metadata.clean_title(p[field])
+    if p.get("authors"):
+        p["authors"] = [metadata.clean_title(a) or a for a in p["authors"]]
     if p.get("item_type") in ("journalArticle", "preprint", "conferencePaper") \
             and not p.get("authors") and not p.get("year") and not doi_key(p.get("doi")):
         p["item_type"] = "webpage"
+
+
+def site_name(url: str) -> str:
+    """The link's domain without "www.", e.g. "sciencedirect.com"."""
+    host = urlsplit(url).netloc.lower()
+    return host[4:] if host.startswith("www.") else host
 
 
 def _prepare_for_upload(p: dict) -> None:
@@ -525,6 +595,9 @@ def _prepare_for_upload(p: dict) -> None:
     if p.get("metadata_source") in ("link", "non_paper", "needs_manual", "none") \
             and not p.get("item_type"):
         p["item_type"] = "webpage"
+    # A web page with no site name gets its domain (Zotero's Website field).
+    if p.get("item_type") == "webpage" and not p.get("journal"):
+        p["journal"] = site_name(p["url"])
 
 
 def _label(p: dict) -> str:
@@ -557,6 +630,53 @@ def start_job(papers: list[dict], anthropic_key: Optional[str],
         _current = Job(papers, anthropic_key, audit_log_path, **kwargs)
         _current.start()
         return True
+
+
+# ── Saved results (for testing) ───────────────────────────────────────────────
+# A finished search can be saved to a file and uploaded in step 1 instead of
+# an export: the page then shows those results without searching again.
+
+SAVED_MARK = "slack_to_zotero_saved_results"
+# Set during a scan or upload, or tied to this computer; worked out again on load.
+_NOT_SAVED = ("bucket", "reason", "include", "decision", "was_edited", "zotero_key",
+              "upload_error", "existing_key", "existing_how", "existing_url",
+              "existing_title", "local_pdf_path", "pdf_size_bytes", "not_scanned",
+              "scan_error")
+
+
+def saved_results(papers: list[dict], label: str) -> bytes:
+    kept = [{k: v for k, v in p.items() if k not in _NOT_SAVED} for p in papers]
+    return json.dumps({SAVED_MARK: 1, "label": label, "papers": kept},
+                      ensure_ascii=False, indent=1).encode()
+
+
+def read_saved_results(data: bytes) -> Optional[tuple[list[dict], str]]:
+    """(papers, label) if `data` is a saved-results file, else None."""
+    try:
+        saved = json.loads(data)
+    except ValueError:
+        return None
+    if not isinstance(saved, dict) or SAVED_MARK not in saved:
+        return None
+    return saved["papers"], saved.get("label") or "Saved results"
+
+
+def load_saved_job(papers: list[dict], label: str, **kwargs) -> bool:
+    """Show saved results as a finished search. Each item is checked against
+    Zotero again and sorted again, but nothing is looked up."""
+    return start_job(papers, None, enrich=lambda *a: {},
+                     title_search=lambda *a, **k: None,
+                     source={"label": label}, **kwargs)
+
+
+def discard_job() -> None:
+    """Stop a running search and drop it and its results. Its threads finish
+    the items in progress in the background and are then gone."""
+    global _current
+    with _current_lock:
+        if _current is not None and _current.snapshot()["phase"] == SCANNING:
+            _current.stop()
+            _current = None
 
 
 def clear_job() -> None:

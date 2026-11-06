@@ -98,7 +98,8 @@ def test_finished_scan_keeps_every_step_on_the_page():
     text = _text(at)
     assert "Done · export.zip" in text
     assert "1 ready · 1 review · 0 already in Zotero" in text
-    assert "**Ready (1)**" in text and "**Review (1)**" in text
+    labels = [e.label for e in at.expander]
+    assert ["Ready (1)", "Left to review (1)", "Marked for upload (0)", "Removed (0)"] == labels[:4]
     assert "Upload 1 to Zotero" in _buttons(at)
 
 
@@ -125,7 +126,8 @@ def test_results_stay_after_upload_and_more_can_be_uploaded():
     at = _page()
     text = _text(at)
     assert "Done · Uploaded 1" in text
-    assert "**Ready (1)**" in text                   # the results are still there
+    assert "**Ready" not in text                     # uploaded items leave Ready
+    assert "Left to review (1)" in [e.label for e in at.expander]   # Review stays
     assert "New search" in _buttons(at)
     assert "Upload 1 to Zotero" not in _buttons(at)   # nothing left selected
 
@@ -173,7 +175,145 @@ def test_search_filters_the_results():
     _scanned_job()
     at = _page()
     at.text_input(key="results_query").input("paper").run()
-    text = _text(at)
-    assert "**Ready (1)**" in text and "**Review (0 of 1)**" in text
+    labels = [e.label for e in at.expander]
+    assert "Ready (1)" in labels and "Left to review (0)" in labels
     at.text_input(key="results_query").input("nothing matches this").run()
-    assert "**Ready (0 of 1)**" in _text(at)
+    assert "Ready (0 of 1)" in [e.label for e in at.expander]
+
+
+# ── Review cards ──────────────────────────────────────────────────────────────
+
+def _junk(job):
+    return next(p for p in job.papers if p["url"].endswith("junk"))
+
+
+def test_review_card_correct_adds_the_item_to_the_upload():
+    job = _scanned_job()
+    at = _page()
+    assert "1 of 1" in _text(at)
+    _buttons(at)["Mark ready for upload"].click().run()
+    assert _junk(job)["decision"] == "correct" and _junk(job)["include"]
+    assert "Upload 2 to Zotero" in _buttons(at)
+    assert "All items reviewed." in _text(at)
+    assert "Marked for upload (1)" in [e.label for e in at.expander]
+
+
+def test_review_card_remove_leaves_the_item_out_and_can_be_undone():
+    job = _scanned_job()
+    at = _page()
+    assert "Not a source" not in _buttons(at)
+    _buttons(at)["Remove"].click().run()
+    assert _junk(job)["decision"] == "removed" and not _junk(job)["include"]
+    assert "Upload 1 to Zotero" in _buttons(at)
+    assert "All items reviewed." in _text(at)
+    assert "Removed (1)" in [e.label for e in at.expander]
+    assert _buttons(at)["Undo"].disabled             # until a row is ticked
+
+
+def test_review_card_edit_saves_the_fields_and_uploads():
+    job = _scanned_job()
+    at = _page()
+    _buttons(at)["Edit"].click().run()
+    import zlib
+    k = zlib.crc32(_junk(job)["url"].encode())
+    at.text_input(key=f"edit_title_{k}").input("The Real Title")
+    at.text_input(key=f"edit_authors_{k}").input("Doe, Jane; Roe, Rich")
+    at.text_input(key=f"edit_year_{k}").input("2023")
+    _buttons(at)["Save edits"].click().run()
+    p = _junk(job)
+    assert (p["title"], p["authors"], p["year"]) == \
+        ("The Real Title", ["Doe, Jane", "Roe, Rich"], "2023")
+    assert "decision" not in p and "Mark ready for upload" in _buttons(at)   # back to the card
+    _buttons(at)["Mark ready for upload"].click().run()
+    assert p["decision"] == "edited"
+    assert p["include"] and "Upload 2 to Zotero" in _buttons(at)
+
+
+def test_review_table_view_is_still_available():
+    _scanned_job()
+    at = _page()
+    at.radio(key="review_view").set_value("Table").run()
+    assert not at.exception
+    assert "card_correct" not in [b.key for b in at.button]
+
+
+# ── Confirming an upload ──────────────────────────────────────────────────────
+
+def test_upload_asks_first_when_items_are_left_out():
+    job = _scanned_job()                    # 1 ready, 1 review item not marked
+    at = _page()
+    _buttons(at)["Upload 1 to Zotero"].click().run()
+    text = " ".join(m.value for m in at.markdown)
+    assert "Upload 1 item to Zotero?" in text
+    assert "1 in Review isn't marked ready for upload." in text
+    assert job.snapshot()["phase"] == scan.SCANNED        # nothing uploaded yet
+    _buttons(at)["Cancel"].click().run()
+    assert job.snapshot()["phase"] == scan.SCANNED
+
+
+def test_upload_goes_straight_through_when_nothing_is_left_out(monkeypatch):
+    job = _scanned_job()
+    job.decide(_junk(job)["url"], "removed")
+    started = []
+    monkeypatch.setattr(job, "start_upload", lambda make: started.append(True))
+    at = _page()
+    _buttons(at)["Upload 1 to Zotero"].click().run()
+    assert started == [True]
+
+
+def test_card_shows_only_the_original_slack_message():
+    job = _scanned_job()
+    junk = _junk(job)
+    junk["comments"] = [{"author": "Lorae", "ts": "1", "text": "", "is_reply": False},
+                        {"author": "Ben", "ts": "2", "text": "agreed", "is_reply": True}]
+    text = _text(_page())
+    assert "**Original Slack message:** *(No message)*" in text
+    assert "agreed" not in text and "replies" not in text
+
+
+def test_card_quotes_a_real_slack_message():
+    job = _scanned_job()
+    _junk(job)["comments"] = [{"author": "Ana", "ts": "1", "text": "Worth a read", "is_reply": False}]
+    assert '**Original Slack message:** Ana: "Worth a read"' in _text(_page())
+
+
+def test_review_sections_are_collapsible_lists():
+    _scanned_job()
+    at = _page()
+    assert "Left to review (1)" in [e.label for e in at.expander]
+    _buttons(at)["Remove"].click().run()
+    labels = [e.label for e in at.expander]
+    assert "Left to review (0)" in labels and "Removed (1)" in labels
+
+
+def test_review_table_marks_and_removes_selected_rows():
+    import app as page
+    job = _scanned_job()
+    p = _junk(job)
+    page.mark_for_upload(job, [p])
+    assert p["decision"] == "correct" and p["include"]
+    job.decide(p["url"], None)
+    job.edit(p["url"], {"title": "Fixed"})
+    page.mark_for_upload(job, [p])
+    assert p["decision"] == "edited"
+
+
+def test_review_table_view_has_action_buttons():
+    _scanned_job()
+    at = _page()
+    at.radio(key="review_view").set_value("Table").run()
+    buttons = _buttons(at)
+    assert not at.exception
+    assert buttons["Mark ready for upload"].disabled and buttons["Remove"].disabled
+    assert "Edit" not in buttons                        # edited in the table
+
+
+def test_editing_a_marked_item_in_the_table_records_the_edit():
+    import app as page
+    job = _scanned_job()
+    p = _junk(job)
+    job.decide(p["url"], "correct")
+    page.apply_review_edits(job, [p["url"]], {0: {"Title": "Better title", "Select": True}})
+    assert p["title"] == "Better title" and p["decision"] == "edited"
+    page.apply_review_edits(job, [p["url"]], {0: {"Select": True}})   # ticks alone change nothing
+    assert p["title"] == "Better title"
