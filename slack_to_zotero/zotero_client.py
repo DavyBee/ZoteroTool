@@ -15,6 +15,7 @@ import json
 import mimetypes
 import os
 import re
+import secrets
 import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
@@ -51,6 +52,27 @@ def explain_error(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+def new_item_key() -> str:
+    """An item key made by the app, in Zotero's format (8 of these characters)."""
+    return "".join(secrets.choice("23456789ABCDEFGHIJKLMNPQRSTUVWXYZ") for _ in range(8))
+
+
+def _batches(papers: list) -> list[list]:
+    """Papers grouped so each request has at most BATCH_SIZE objects,
+    counting each item's note."""
+    batches, current, size = [], [], 0
+    for p in papers:
+        need = 2 if p.get("comments") else 1
+        if current and size + need > BATCH_SIZE:
+            batches.append(current)
+            current, size = [], 0
+        current.append(p)
+        size += need
+    if current:
+        batches.append(current)
+    return batches
+
+
 def _create_items(zot, items, retries: int = 3):
     """zot.create_items, hardened against pyzotero's 429 handling bug.
 
@@ -62,7 +84,9 @@ def _create_items(zot, items, retries: int = 3):
     parse error so genuine failures still surface immediately."""
     for attempt in range(retries):
         try:
-            return zot.create_items(items)
+            # A write near 50 objects can take longer than pyzotero's default
+            # 30 s; a timeout after Zotero saved them would look like a failure.
+            return zot.create_items(items, timeout=60)
         except ValueError as exc:
             # JSONDecodeError (a ValueError subclass) from the empty 429 body.
             if "Expecting value" not in str(exc) or attempt == retries - 1:
@@ -194,53 +218,62 @@ def upload_papers(
         if log_cb:
             log_cb(f"{status:10}{paper.get('title') or paper['url']}")
 
-    for batch_start in range(0, total, BATCH_SIZE):
-        batch = papers[batch_start : batch_start + BATCH_SIZE]
-
+    for batch in _batches(papers):
+        # Each item goes in the same request as its Slack note: Zotero accepts a
+        # child after its parent when the app makes the parent's key itself. So
+        # a cut-off upload never leaves an item in Zotero without its note.
+        objects, owners = [], []
+        for p in batch:
+            p["_key"] = new_item_key()
+            objects.append({**paper_to_zotero_item(p), "key": p["_key"]})
+            owners.append((p, "item"))
+            if p.get("comments"):
+                objects.append({"itemType": "note", "parentItem": p["_key"],
+                                "note": _comments_to_note_html(p["comments"])})
+                owners.append((p, "note"))
         try:
-            resp = _create_items(zot, [paper_to_zotero_item(p) for p in batch])
+            resp = _create_items(zot, objects)
         except Exception as exc:
             # Network or authentication failure. "Retry failed" on the page
             # sends these again.
             msg = explain_error(exc)
             for p in batch:
+                p.pop("_key", None)
                 errors.append((p["url"], msg))
                 p["upload_error"] = msg
                 n_fail += 1
                 finished(p, "Failed")
             continue
 
+        failed_items = set()
         for idx_str, err_data in resp.get("failed", {}).items():
-            paper = batch[int(idx_str)]
+            paper, kind = owners[int(idx_str)]
             msg = err_data.get("message") or "unknown error"
-            errors.append((paper["url"], f"upload failed: {msg}"))
-            paper["upload_error"] = msg
-            n_fail += 1
-            finished(paper, "Failed")
+            if kind == "item":
+                failed_items.add(paper["url"])
+                errors.append((paper["url"], f"upload failed: {msg}"))
+                paper["upload_error"] = msg
+                n_fail += 1
+                finished(paper, "Failed")
+        for idx_str, err_data in resp.get("failed", {}).items():
+            paper, kind = owners[int(idx_str)]
+            if kind == "note" and paper["url"] not in failed_items:
+                errors.append((paper["url"],
+                               f"note upload failed: {err_data.get('message')}"))
 
         created = []
         for idx_str, item_data in sorted(resp.get("successful", {}).items(),
                                          key=lambda kv: int(kv[0])):
-            paper = batch[int(idx_str)]
-            paper["zotero_key"] = item_data["data"]["key"]
+            paper, kind = owners[int(idx_str)]
+            if kind == "note":
+                n_notes += 1
+                continue
+            paper["zotero_key"] = (item_data.get("key")
+                                   or item_data.get("data", {}).get("key") or paper["_key"])
             created.append(paper)
             n_ok += 1
-
-        # The Slack notes for the whole batch, in one request. A note failure
-        # doesn't fail its item, which is already in Zotero.
-        with_notes = [p for p in created if p.get("comments")]
-        if with_notes:
-            notes = [{"itemType": "note", "parentItem": p["zotero_key"],
-                      "note": _comments_to_note_html(p["comments"])} for p in with_notes]
-            try:
-                note_resp = _create_items(zot, notes)
-                n_notes += len(note_resp.get("successful", {}))
-                for idx_str, err in note_resp.get("failed", {}).items():
-                    errors.append((with_notes[int(idx_str)]["url"],
-                                   f"note upload failed: {err.get('message')}"))
-            except Exception as exc:
-                for p in with_notes:
-                    errors.append((p["url"], f"note upload failed: {exc}"))
+        for p in batch:
+            p.pop("_key", None)
 
         # Files, one at a time. An item is finished once its file is attached.
         for paper in created:

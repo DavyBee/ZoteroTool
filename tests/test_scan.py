@@ -173,16 +173,25 @@ class FakeZotero:
         self.reject = set(reject)
         self.created = []
 
-    def create_items(self, items):
+    def create_items(self, items, **kwargs):
         resp = {"successful": {}, "failed": {}}
+        made = {i.get("key") for i in self.created}
         for i, item in enumerate(items):
+            parent = item.get("parentItem")
             if item.get("title") in self.reject:
                 resp["failed"][str(i)] = {"message": "bad item"}
+            elif parent and parent not in made:         # like Zotero: parent first
+                resp["failed"][str(i)] = {"message": f"Parent item {parent} not found"}
             else:
-                key = f"K{len(self.created)}"
+                key = item.get("key") or f"K{len(self.created)}"
                 self.created.append(item)
-                resp["successful"][str(i)] = {"data": {"key": key}}
+                made.add(key)
+                resp["successful"][str(i)] = {"key": key, "data": {"key": key}}
         return resp
+
+    @property
+    def items_created(self):
+        return [i for i in self.created if i.get("itemType") != "note"]
 
 
 def test_upload_sends_only_selected_items_and_retries_failures():
@@ -285,9 +294,9 @@ def test_upload_reports_each_item_and_sends_notes_in_one_request(monkeypatch, tm
     class Zot(FakeZotero):
         calls = 0
 
-        def create_items(self, items):
+        def create_items(self, items, **kwargs):
             Zot.calls += 1
-            return super().create_items(items)
+            return super().create_items(items, **kwargs)
 
     comment = [{"ts": "1", "author": "A", "text": "x", "is_reply": False}]
     papers = [{"url": f"https://a.org/{i}", "title": f"P{i}", "comments": comment}
@@ -297,7 +306,7 @@ def test_upload_reports_each_item_and_sends_notes_in_one_request(monkeypatch, tm
     result = zotero_client.upload_papers(papers, Zot(), progress_cb=lambda d, t: progress.append((d, t)),
                                          log_cb=lines.append)
     assert progress == [(1, 3), (2, 3), (3, 3)]
-    assert Zot.calls == 2                         # the items, then all three notes
+    assert Zot.calls == 1                         # items and their notes together
     assert result["notes_added"] == 3 and len(attached) == 1
     assert [l.split()[0] for l in lines] == ["Uploaded"] * 3
 
@@ -665,7 +674,7 @@ class RateLimitedZotero(FakeZotero):
         self.limited = limited
         self.backoff_until = 0.0
 
-    def create_items(self, items):
+    def create_items(self, items, **kwargs):
         if self.limited:
             self.limited -= 1
             raise ValueError("Expecting value: line 1 column 1 (char 0)")
@@ -774,11 +783,11 @@ def test_searching_again_after_an_upload_cut_off_by_a_restart():
     real = zot.create_items
     calls = {"n": 0}
 
-    def cut_off(items):
+    def cut_off(items, **kwargs):
         calls["n"] += 1
-        if calls["n"] > 2:                    # items batch, notes batch, then the restart
+        if calls["n"] > 1:                    # one batch of items and notes, then the restart
             raise Restart()
-        return real(items)
+        return real(items, **kwargs)
     zot.create_items = cut_off
     first.start_upload(lambda: zot)
     _wait(first, scan.DONE)
@@ -833,3 +842,44 @@ def test_two_people_starting_a_search_at_once_start_one():
     assert started.count(True) == 1
     _wait(scan.current_job(), scan.SCANNED)
     scan._current = None
+
+
+def test_each_request_carries_items_with_their_notes_within_zotero_limit():
+    from slack_to_zotero import zotero_client
+    comment = [{"ts": "1", "author": "A", "text": "x", "is_reply": False}]
+    papers = [{"url": f"https://a.org/{i}", "title": f"P{i}", "comments": comment}
+              for i in range(60)]
+    sent = []
+
+    class Zot(FakeZotero):
+        def create_items(self, items, **kwargs):
+            sent.append(items)
+            return super().create_items(items, **kwargs)
+    zot = Zot()
+    result = zotero_client.upload_papers(papers, zot)
+    assert all(len(req) <= 50 for req in sent)
+    for req in sent:                                   # every note right after its parent
+        for i, obj in enumerate(req):
+            if obj["itemType"] == "note":
+                assert req[i - 1]["key"] == obj["parentItem"]
+    assert result["uploaded"] == 60 and result["notes_added"] == 60
+    assert all(len(p["zotero_key"]) == 8 for p in papers)
+    assert not any("_key" in p for p in papers)
+
+
+def test_a_rejected_item_is_not_also_reported_for_its_note():
+    from slack_to_zotero import zotero_client
+    comment = [{"ts": "1", "author": "A", "text": "x", "is_reply": False}]
+    papers = [{"url": "https://a.org/bad", "title": "Bad", "comments": comment},
+              {"url": "https://a.org/ok", "title": "Ok", "comments": comment}]
+    result = zotero_client.upload_papers(papers, FakeZotero(reject={"Bad"}))
+    assert result["uploaded"] == 1 and result["failed"] == 1 and result["notes_added"] == 1
+    assert [m for _u, m in result["errors"]] == ["upload failed: bad item"]
+
+
+def test_item_keys_follow_zoteros_format():
+    from slack_to_zotero.zotero_client import new_item_key
+    import re
+    keys = {new_item_key() for _ in range(200)}
+    assert len(keys) == 200
+    assert all(re.fullmatch(r"[23456789ABCDEFGHIJKLMNPQRSTUVWXYZ]{8}", k) for k in keys)
