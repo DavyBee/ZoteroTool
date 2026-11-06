@@ -818,21 +818,24 @@ def test_a_full_zotero_library_gets_a_plain_message(monkeypatch):
         zotero_client._http("POST", "https://api.zotero.org/x", b"", {})
 
 
-def test_pause_says_pausing_until_the_items_in_progress_finish():
+def test_pause_freezes_progress_while_items_in_progress_finish():
     import threading
     gate = threading.Event()
+    started = threading.Event()
 
     def enrich(p, *a):
+        started.set()
         gate.wait(5)
         return {"metadata_source": "translator", "title": "T"}
     job = scan.Job(_papers(1), None, title_search=lambda *a: None, enrich=enrich)
     job.start()
-    end = time.time() + 5
-    while not job._busy:
-        assert time.time() < end
-        time.sleep(0.01)
+    assert started.wait(5)
     job.pause()
+    gate.set()                                     # the item in progress finishes...
+    time.sleep(0.3)
     snap = job.snapshot()
-    assert snap["paused"] and snap["pausing"]          # one item still being looked up
-    gate.set()
+    assert snap["paused"] and snap["phase"] == scan.SCANNING   # ...out of sight
+    assert snap["done"] == 0 and not snap["log"]
+    job.resume()
     _wait(job, scan.SCANNED)
+    assert job.snapshot()["done"] == 1

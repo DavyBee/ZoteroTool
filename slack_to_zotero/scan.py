@@ -257,7 +257,9 @@ class Job:
         self.stop_requested = False
         self._running = threading.Event()        # cleared while paused
         self._running.set()
-        self._busy = 0                           # items being looked up right now
+        # While paused, the page shows progress as it was when Pause was
+        # pressed; items already being looked up finish out of sight.
+        self._shown_at_pause: Optional[tuple[int, list[str]]] = None   # (done, log)
         self._paused_at: Optional[float] = None
         self._paused_for = 0.0
         self.started_at = time.time()
@@ -282,6 +284,7 @@ class Job:
         with self.lock:
             if not self.stop_requested and self._running.is_set():
                 self._paused_at = time.time()
+                self._shown_at_pause = (self.done, list(self.log))
                 self._running.clear()
 
     def resume(self) -> None:
@@ -289,6 +292,7 @@ class Job:
             if not self._running.is_set():
                 self._paused_for += time.time() - (self._paused_at or time.time())
                 self._paused_at = None
+            self._shown_at_pause = None
             self._running.set()
 
     def search_seconds(self) -> float:
@@ -310,15 +314,6 @@ class Job:
         self._running.wait()
         if self.stop_requested:
             return {"metadata_source": "none", "not_scanned": True}
-        with self.lock:
-            self._busy += 1
-        try:
-            return self._lookup(paper)
-        finally:
-            with self.lock:
-                self._busy -= 1
-
-    def _lookup(self, paper: dict) -> dict:
         try:
             fields = self._enrich(paper, self.anthropic_key, self.audit_log_path)
             trial = {**paper, **fields}
@@ -374,6 +369,9 @@ class Job:
         except Exception:
             with self.lock:
                 self.fatal_error = traceback.format_exc()
+        # Paused as the last items finished: show the results only on Resume
+        # (or Stop), so nothing changes on the page while it says Paused.
+        self._running.wait()
         with self.lock:
             for p in self.papers:                  # anything the pool never reached
                 if "bucket" not in p:
@@ -619,16 +617,16 @@ class Job:
 
     def snapshot(self) -> dict:
         with self.lock:
+            done, log = self.done, list(self.log)
+            if self._shown_at_pause and not self._running.is_set():
+                done, log = self._shown_at_pause
             return {"phase": self.phase, "step": self.step,
-                    "done": self.done, "total": self.total,
-                    "log": list(self.log), "fatal_error": self.fatal_error,
+                    "done": done, "total": self.total,
+                    "log": list(log), "fatal_error": self.fatal_error,
                     "upload_result": self.upload_result,
                     "skipped_existing": self.skipped_existing,
                     "stopping": self.stop_requested and self.phase == SCANNING,
                     "paused": not self._running.is_set() and self.phase == SCANNING,
-                    # Paused, but items already being looked up still finish.
-                    "pausing": not self._running.is_set() and self.phase == SCANNING
-                               and self._busy > 0,
                     "llm_problem": metadata.llm_problem if self.anthropic_key else None}
 
 
