@@ -433,8 +433,10 @@ def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
         rows, key=key, hide_index=True,
         disabled=columns if locked else ["Link", "Status", "Reason", "Summary", "Added by"],
         column_config={
-            "Select": st.column_config.CheckboxColumn("", width=40),
-            "Link": st.column_config.LinkColumn(display_text="Open", width=50),
+            # Pinned columns keep their width; the rest stretch to fill the
+            # table. 50 px is the narrowest Streamlit allows.
+            "Select": st.column_config.CheckboxColumn("", width=50, pinned=True),
+            "Link": st.column_config.LinkColumn(display_text="Open", width=50, pinned=True),
             "Status": st.column_config.TextColumn(width=90),
             "Reason": st.column_config.TextColumn(width=170),
             "Title": st.column_config.TextColumn(width="medium" if mode != "ready" else "large"),
