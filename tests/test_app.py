@@ -309,3 +309,11 @@ def test_editing_a_marked_item_in_the_table_records_the_edit():
     assert p["title"] == "Better title" and p["decision"] == "edited"
     page.apply_review_edits(job, [p["url"]], {0: {"Select": True}})   # ticks alone change nothing
     assert p["title"] == "Better title"
+
+
+def test_search_ignores_accents_and_finds_file_names():
+    import app as page
+    items = [{"url": "https://a.org/1", "title": "Health Shocks", "authors": ["Colmsjö, Anna"]},
+             {"url": "https://files.slack.com/2", "slack_file_name": "Ahmad Livshits 2024.pdf"}]
+    assert [p["url"] for p in page._matching(items, "colmsjo")] == ["https://a.org/1"]
+    assert [p["url"] for p in page._matching(items, "LIVSHITS")] == ["https://files.slack.com/2"]

@@ -13,6 +13,7 @@ import re
 import sys
 import tempfile
 import time
+import unicodedata
 import zlib
 
 import streamlit as st
@@ -548,16 +549,23 @@ def _short_link(url: str) -> str:
     return text if len(text) <= 60 else text[:57] + "..."
 
 
+def _plain(text: str) -> str:
+    """Lowercase without accents, so "colmsjo" finds "Colmsjö"."""
+    decomposed = unicodedata.normalize("NFKD", text.casefold())
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+
+
 def _matching(items: list[dict], query: str) -> list[dict]:
     """Items containing every word of the search."""
-    words = query.lower().split()
+    words = _plain(query).split()
     if not words:
         return items
 
     def text(p: dict) -> str:
-        return " ".join([p.get("title") or "", " ".join(p.get("authors") or []),
-                         p.get("journal") or "", p["url"], p.get("reason") or "",
-                         p.get("summary") or ""]).lower()
+        return _plain(" ".join([
+            p.get("title") or "", p.get("slack_file_name") or "",
+            " ".join(p.get("authors") or []), p.get("journal") or "", p["url"],
+            p.get("reason") or "", p.get("summary") or ""]))
     return [p for p in items if all(w in text(p) for w in words)]
 
 
