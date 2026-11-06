@@ -84,6 +84,10 @@ _TYPE_SUPPORTS: dict[str, frozenset[str]] = {
     "podcast":         frozenset(["publisher"]),
 }
 
+# Types with an ISBN field (Zotero's schema, https://api.zotero.org/schema).
+# Zotero rejects an item that sends ISBN on any other type.
+_HAS_ISBN = frozenset(["book", "bookSection", "conferencePaper", "report", "thesis"])
+
 # Type names that aren't Zotero item types (the AI sometimes returns these),
 # mapped to the closest one. Anything still unknown becomes "webpage"
 # (_zotero_item_type), because Zotero rejects an item with an invalid type.
@@ -390,7 +394,7 @@ def paper_to_zotero_item(paper: Paper) -> dict:
         item["issue"] = paper["issue"]
     if paper.get("pages") and "pages" in supported:
         item["pages"] = paper["pages"]
-    if paper.get("isbn"):
+    if paper.get("isbn") and item_type in _HAS_ISBN:
         item["ISBN"] = paper["isbn"]
 
     return item

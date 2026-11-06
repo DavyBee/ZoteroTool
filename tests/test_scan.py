@@ -561,3 +561,12 @@ def test_lookup_results_with_wrong_types_are_cleaned():
     q = {"authors": [None, "Doe, Jane", 5, ["x"]], "item_type": "webpage"}
     scan._tidy(q)
     assert q["authors"] == ["Doe, Jane", "5"]
+
+
+def test_isbn_is_sent_only_for_types_that_have_it():
+    from slack_to_zotero.zotero_client import paper_to_zotero_item
+    article = paper_to_zotero_item({"url": "u", "title": "T", "item_type": "journalArticle",
+                                    "isbn": "9780000000000"})
+    book = paper_to_zotero_item({"url": "u", "title": "T", "item_type": "book",
+                                 "isbn": "9780000000000"})
+    assert "ISBN" not in article and book["ISBN"] == "9780000000000"
