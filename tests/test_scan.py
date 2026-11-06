@@ -751,3 +751,46 @@ def test_many_people_changing_results_at_once_stays_consistent():
             assert not p["include"]
         if p.get("zotero_key"):
             assert p["url"] in created
+
+
+def test_searching_again_after_an_upload_cut_off_by_a_restart():
+    """The app restarted partway through an upload: some items reached Zotero,
+    the rest didn't. Searching the same export again must treat the first as
+    already in Zotero and offer only the rest, so nothing is duplicated."""
+    from slack_to_zotero.zotero_index import LibraryIndex
+
+    def enrich(p, *a):
+        i = p["url"].rsplit("/", 1)[1]
+        return {"metadata_source": "translator", "title": f"Paper number {i} on rent",
+                "authors": ["Doe, Jane"], "year": "2024", "item_type": "journalArticle"}
+
+    first = scan.Job(_papers(120), None, title_search=lambda *a: None, enrich=enrich)
+    first.start()
+    _wait(first, scan.SCANNED)
+    zot = FakeZotero()
+
+    class Restart(Exception):
+        pass
+    real = zot.create_items
+    calls = {"n": 0}
+
+    def cut_off(items):
+        calls["n"] += 1
+        if calls["n"] > 2:                    # items batch, notes batch, then the restart
+            raise Restart()
+        return real(items)
+    zot.create_items = cut_off
+    first.start_upload(lambda: zot)
+    _wait(first, scan.DONE)
+    reached = len(zot.created)
+    assert 0 < reached < 120
+
+    index = LibraryIndex()
+    for i, item in enumerate(zot.created):
+        index.add({**item, "key": f"K{i}"})
+    second = scan.Job(_papers(120), None, title_search=lambda *a: None, enrich=enrich,
+                      load_index=lambda: index)
+    second.start()
+    _wait(second, scan.SCANNED)
+    assert len(second.items(scan.EXISTING)) == reached
+    assert len(second.items(scan.READY)) == 120 - reached
