@@ -77,3 +77,24 @@ def test_python_version_is_not_near_end_of_life():
         "Redeploy the app on the newest Python Streamlit Cloud offers (delete the app "
         "and deploy it again, choosing the version under Advanced settings), then "
         "update requires-python and the --python-version in pyproject.toml.")
+
+
+def test_zotero_fields_the_app_sends_still_exist():
+    """Zotero rejects an item with a field its type doesn't have. Checks the
+    app's per-type field rules against Zotero's published schema."""
+    import json
+    from urllib.request import urlopen
+
+    from slack_to_zotero import zotero_client as zc
+
+    with urlopen("https://api.zotero.org/schema", timeout=30) as r:
+        schema = json.load(r)
+    fields = {t["itemType"]: {f["field"] for f in t["fields"]} for t in schema["itemTypes"]}
+    always = {"title", "abstractNote", "url", "language", "date", "DOI"}
+    for kind in zc._TYPE_SUPPORTS:
+        have = fields[kind]
+        assert always <= have, (kind, always - have)
+        assert zc._TYPE_SUPPORTS[kind] <= have, (kind, zc._TYPE_SUPPORTS[kind] - have)
+        venue = zc._VENUE_FIELD.get(kind)
+        assert venue is None or venue in have, (kind, venue)
+        assert (kind in zc._HAS_ISBN) == ("ISBN" in have), (kind, "ISBN")
