@@ -340,3 +340,35 @@ def test_card_handles_links_with_brackets_and_multiline_messages():
     text = _text(_page())
     assert "](<https://en.wikipedia.org/wiki/Eviction_(law)>)" in text
     assert '"First line Second line \\# not a heading"' in text
+
+
+def test_new_search_asks_first_when_items_would_be_lost():
+    job = _scanned_job()                    # after upload, the Review item is left
+    job.start_upload(lambda: None, upload=lambda ps, zot, **kw: (
+        [p.__setitem__("zotero_key", "K") for p in ps]
+        and {"uploaded": len(ps), "failed": 0, "errors": []}))
+    _wait(job, scan.DONE)
+    at = _page()
+    _buttons(at)["New search"].click().run()
+    assert scan.current_job() is job                   # not cleared yet
+    assert "1 item not uploaded will be cleared" in _text(at)
+    _buttons(at)["Cancel"].click().run()
+    assert scan.current_job() is job
+    _buttons(at)["New search"].click().run()
+    _buttons(at)["Clear results"].click().run()
+    assert scan.current_job() is None
+
+
+def test_failed_batches_are_not_listed_as_file_warnings():
+    job = _scanned_job()
+
+    def upload(ps, zot, **kw):
+        for p in ps:
+            p["upload_error"] = "Couldn't reach Zotero. Check the connection, then retry."
+        return {"uploaded": 0, "failed": len(ps),
+                "errors": [(p["url"], p["upload_error"]) for p in ps]}
+    job.start_upload(lambda: None, upload=upload)
+    _wait(job, scan.DONE)
+    at = _page()
+    assert not [e for e in at.expander if e.label.startswith("Warnings")]
+    assert "Retry failed" in _buttons(at)

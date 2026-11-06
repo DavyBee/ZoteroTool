@@ -69,6 +69,7 @@ def start_job(papers: list[dict], source: dict) -> bool:
 def clear_job() -> None:
     scan.clear_job()
     st.session_state.pop("confirm_start_over", None)
+    st.session_state.pop("confirm_new_search", None)
 
 
 def zotero_ready() -> bool:
@@ -685,8 +686,9 @@ def step_upload(job: scan.Job | None) -> None:
         if failed:
             st.dataframe([{"Title": p.get("title") or p["url"], "Error": p["upload_error"]}
                           for p in failed], hide_index=True)
+        # Problems with an uploaded item's file or note; failed items are listed above.
         warnings = [msg for _url, msg in (snap["upload_result"] or {}).get("errors", [])
-                    if not msg.startswith(("upload failed", "batch upload failed"))]
+                    if msg.startswith(("pdf_attach", "note upload"))]
         if warnings:
             with st.expander(f"Warnings ({len(warnings)})"):
                 st.write("These items were uploaded without some of their files or notes.")
@@ -708,10 +710,32 @@ def step_upload(job: scan.Job | None) -> None:
         st.caption("Nothing selected to upload.")
 
     if has_uploaded:
-        if st.button("New search", type="tertiary" if n_selected else "primary",
+        new_search(job, primary=not n_selected)
+
+
+def new_search(job: scan.Job, primary: bool) -> None:
+    """Clear the results for a new search, asking first if any item that
+    hasn't been uploaded or removed would be lost."""
+    unsent = sum(1 for p in job.items(scan.READY) + job.items(scan.REVIEW)
+                 if not p.get("zotero_key") and p.get("decision") != "removed")
+    if not st.session_state.get("confirm_new_search"):
+        if st.button("New search", type="primary" if primary else "tertiary",
                      key="new_search"):
-            clear_job()
+            if unsent:
+                st.session_state.confirm_new_search = True
+            else:
+                clear_job()
             st.rerun()
+        return
+    st.caption(f"{_plural(unsent, 'item')} not uploaded will be cleared, "
+               "for everyone using the app.")
+    row = st.container(horizontal=True)
+    if row.button("Clear results", type="primary", key="new_search_confirm"):
+        clear_job()
+        st.rerun()
+    if row.button("Cancel", type="tertiary", key="new_search_cancel"):
+        st.session_state.pop("confirm_new_search", None)
+        st.rerun()
 
 
 def _left_out(job: scan.Job) -> int:
