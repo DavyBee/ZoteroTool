@@ -794,3 +794,42 @@ def test_searching_again_after_an_upload_cut_off_by_a_restart():
     _wait(second, scan.SCANNED)
     assert len(second.items(scan.EXISTING)) == reached
     assert len(second.items(scan.READY)) == 120 - reached
+
+
+def test_two_people_pressing_upload_at_once_upload_each_item_once():
+    import threading as th
+    job = _ready_job(30)
+    zot = FakeZotero()
+    go = th.Barrier(6)
+
+    def press():
+        go.wait()
+        job.start_upload(lambda: zot)
+    presses = [th.Thread(target=press) for _ in range(6)]
+    for t in presses:
+        t.start()
+    for t in presses:
+        t.join()
+    _wait(job, scan.DONE)
+    titles = [i["title"] for i in zot.created]
+    assert len(titles) == 30 == len(set(titles))
+
+
+def test_two_people_starting_a_search_at_once_start_one():
+    import threading as th
+    scan._current = None
+    go = th.Barrier(6)
+    started = []
+
+    def press():
+        go.wait()
+        started.append(scan.start_job(_papers(5), None, title_search=lambda *a: None,
+                                      enrich=lambda p, *a: {"metadata_source": "none"}))
+    presses = [th.Thread(target=press) for _ in range(6)]
+    for t in presses:
+        t.start()
+    for t in presses:
+        t.join()
+    assert started.count(True) == 1
+    _wait(scan.current_job(), scan.SCANNED)
+    scan._current = None
