@@ -95,16 +95,16 @@ def test_finished_scan_keeps_every_step_on_the_page():
     assert "Upload 1 ready item to Zotero" in _buttons(at)
 
 
-def test_start_over_asks_before_clearing():
+def test_clear_results_asks_before_clearing():
     _scanned_job()
     at = _page()
-    _buttons(at)["Start over"].click().run()
+    at.button(key="clear_results").click().run()
     assert scan.current_job() is not None            # nothing cleared yet
-    assert "Clear results" in _buttons(at)
-    _buttons(at)["Cancel"].click().run()
-    assert "Start over" in _buttons(at)
-    _buttons(at)["Start over"].click().run()
-    _buttons(at)["Clear results"].click().run()
+    assert "clear_results_confirm" in [b.key for b in at.button]
+    at.button(key="clear_results_cancel").click().run()
+    assert "clear_results_confirm" not in [b.key for b in at.button]
+    at.button(key="clear_results").click().run()
+    at.button(key="clear_results_confirm").click().run()
     assert scan.current_job() is None
     assert "Search for sources" in _buttons(at)
 
@@ -366,7 +366,7 @@ def test_new_search_asks_first_when_items_would_be_lost():
     _buttons(at)["Cancel"].click().run()
     assert scan.current_job() is job
     _buttons(at)["New search"].click().run()
-    _buttons(at)["Clear results"].click().run()
+    at.button(key="new_search_confirm").click().run()
     assert scan.current_job() is None
 
 
@@ -615,7 +615,7 @@ def test_colored_buttons_have_the_keys_the_styles_use():
     at = _page()
     at.radio(key="review_view").set_value("Table").run()
     keys = {b.key for b in at.button}
-    for key in ["t_ready_remove", "t_ready_move", "t_left_remove", "start_over"]:
+    for key in ["t_ready_remove", "t_ready_move", "t_left_remove", "clear_results"]:
         assert key in keys and key in page._RED + page._ORANGE
 
 

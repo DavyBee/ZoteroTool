@@ -67,7 +67,7 @@ def start_job(papers: list[dict], source: dict) -> bool:
 
 def clear_job() -> None:
     scan.clear_job()
-    st.session_state.pop("confirm_start_over", None)
+    st.session_state.pop("confirm_clear_results", None)
     st.session_state.pop("confirm_new_search", None)
 
 
@@ -78,10 +78,10 @@ def zotero_ready() -> bool:
 # ── Layout helpers ────────────────────────────────────────────────────────────
 
 # Steps not reached yet are faded, with a line saying what they wait for.
-# Stop, Start over, Remove, and Clear results are red; Move to Review is orange. A
+# Stop, Clear results, Remove, and Clear results are red; Move to Review is orange. A
 # disabled button keeps Streamlit's grey.
-_RED = ["edit_drop_*", "stop", "start_over", "stop_confirm", "card_remove", "t_ready_remove", "t_left_remove",
-        "start_over_confirm", "new_search_confirm"]
+_RED = ["edit_drop_*", "stop", "clear_results", "stop_confirm", "card_remove", "t_ready_remove", "t_left_remove",
+        "clear_results_confirm", "new_search_confirm"]
 _ORANGE = ["t_ready_move"]
 
 
@@ -144,7 +144,7 @@ def step_export(job: scan.Job | None) -> None:
         step_header(1, "Slack export", DONE_STATE)
         summary([job.source.get("label") or "Slack export"], done=True)
         if job.snapshot()["phase"] in (scan.SCANNED, scan.DONE, scan.FAILED):
-            start_over_control()
+            clear_results_control()
         return
 
     step_header(1, "Slack export", CURRENT)
@@ -198,27 +198,27 @@ def step_export(job: scan.Job | None) -> None:
         st.rerun()
 
 
-def start_over_control() -> None:
+def clear_results_control() -> None:
     # The dialog opens at the end of main(), so it can't clash with the
     # upload confirmation opened further down the page.
-    if st.button("Start over", key="start_over"):
-        st.session_state.confirm_start_over = True
+    if st.button("Clear results", key="clear_results"):
+        st.session_state.confirm_clear_results = True
 
 
-def _close_start_over() -> None:
-    st.session_state.pop("confirm_start_over", None)
+def _close_clear_results() -> None:
+    st.session_state.pop("confirm_clear_results", None)
 
 
-@st.dialog("Start over", on_dismiss=_close_start_over)
-def confirm_start_over() -> None:
+@st.dialog("Clear results", on_dismiss=_close_clear_results)
+def confirm_clear_results() -> None:
     st.write("This clears the search results for everyone using the app. "
              "Items already uploaded stay in Zotero.")
     row = st.container(horizontal=True)
-    if row.button("Clear results", key="start_over_confirm"):
+    if row.button("Clear results", key="clear_results_confirm"):
         clear_job()
         st.rerun()
-    if row.button("Cancel", key="start_over_cancel"):
-        _close_start_over()
+    if row.button("Cancel", key="clear_results_cancel"):
+        _close_clear_results()
         st.rerun()
 
 
@@ -857,7 +857,7 @@ def step_upload(job: scan.Job | None) -> None:
             f"Upload {n_selected} ready {'item' if n_selected == 1 else 'items'} to Zotero"
         if st.button(label, type="primary", disabled=not zotero_ready()):
             unmarked = _left_out(job)
-            st.session_state.pop("confirm_start_over", None)   # one dialog at a time
+            st.session_state.pop("confirm_clear_results", None)   # one dialog at a time
             if unmarked:
                 confirm_upload(job, n_selected, unmarked)
             else:
@@ -963,9 +963,9 @@ def main() -> None:
     step_upload(job)
     st.divider()
     render_settings()
-    if st.session_state.get("confirm_start_over") and job is not None \
+    if st.session_state.get("confirm_clear_results") and job is not None \
             and job.snapshot()["phase"] in (scan.SCANNED, scan.DONE, scan.FAILED):
-        confirm_start_over()
+        confirm_clear_results()
 
 
 main()
