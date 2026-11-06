@@ -291,8 +291,10 @@ def _file_name(paper: dict, path: str) -> str:
     ext = os.path.splitext(path)[1].lower() or ".pdf"
     authors = paper.get("authors") or []
     first = authors[0].split(",")[0].strip() if authors else ""
-    parts = " ".join(x for x in (first, paper.get("year") or "") if x)
-    title = re.sub(r"[^\w\s\-]", "", paper.get("title") or "")[:80].strip()
+    def safe(text: str) -> str:                # letters, digits, spaces, hyphens
+        return re.sub(r"[^\w\s\-]", "", text or "").strip()
+    parts = " ".join(x for x in (safe(first)[:40], safe(paper.get("year") or "")) if x)
+    title = safe(paper.get("title") or "")[:80].strip()
     name = " - ".join(x for x in (parts, title) if x) or "Full Text"
     return re.sub(r"\s+", " ", name) + ext
 

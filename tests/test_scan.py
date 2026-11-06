@@ -647,3 +647,11 @@ def test_search_time_leaves_out_time_paused():
     job.resume()                                   # a second click changes nothing
     _wait(job, scan.SCANNED)
     assert job.search_seconds() < 0.2
+
+
+def test_attachment_names_have_no_slashes_from_authors_or_years():
+    from slack_to_zotero.zotero_client import _file_name
+    name = _file_name({"authors": ["AC/DC Collective"], "year": "2023/24",
+                       "title": "Rent: A/B Tests?"}, "/tmp/x.pdf")
+    assert "/" not in name and "\\" not in name and name.endswith(".pdf")
+    assert _file_name({"title": "///"}, "/tmp/x.pdf") == "Full Text.pdf"
