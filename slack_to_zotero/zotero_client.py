@@ -41,6 +41,8 @@ def explain_error(exc: BaseException) -> str:
         TransportError = OSError
     if isinstance(exc, ze.UserNotAuthorisedError):
         return "The Zotero key doesn't allow this. Check that it has write access to the library."
+    if _too_large(exc):
+        return "Zotero says this item is too large to save, likely a very long Slack thread."
     if isinstance(exc, ze.ResourceNotFoundError):
         return "Zotero couldn't find the library or collection. Check the IDs in Settings."
     # pyzotero reads Zotero's empty 429 reply as JSON (see _create_items).
@@ -55,6 +57,11 @@ def explain_error(exc: BaseException) -> str:
 def new_item_key() -> str:
     """An item key made by the app, in Zotero's format (8 of these characters)."""
     return "".join(secrets.choice("23456789ABCDEFGHIJKLMNPQRSTUVWXYZ") for _ in range(8))
+
+
+def _too_large(exc: BaseException) -> bool:
+    from pyzotero import zotero_errors as ze
+    return isinstance(exc, ze.RequestEntityTooLargeError) or "too large" in str(exc).lower()
 
 
 def _batches(papers: list) -> list[list]:
@@ -218,7 +225,9 @@ def upload_papers(
         if log_cb:
             log_cb(f"{status:10}{paper.get('title') or paper['url']}")
 
-    for batch in _batches(papers):
+    queue = _batches(papers)
+    while queue:
+        batch = queue.pop(0)
         # Each item goes in the same request as its Slack note: Zotero accepts a
         # child after its parent when the app makes the parent's key itself. So
         # a cut-off upload never leaves an item in Zotero without its note.
@@ -234,6 +243,14 @@ def upload_papers(
         try:
             resp = _create_items(zot, objects)
         except Exception as exc:
+            if _too_large(exc) and len(batch) > 1:
+                # Long Slack threads can make a request bigger than Zotero
+                # accepts; send it in two halves instead.
+                half = len(batch) // 2
+                queue[:0] = [batch[:half], batch[half:]]
+                for p in batch:
+                    p.pop("_key", None)
+                continue
             # Network or authentication failure. "Retry failed" on the page
             # sends these again.
             msg = explain_error(exc)

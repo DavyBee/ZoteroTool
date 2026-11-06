@@ -883,3 +883,34 @@ def test_item_keys_follow_zoteros_format():
     keys = {new_item_key() for _ in range(200)}
     assert len(keys) == 200
     assert all(re.fullmatch(r"[23456789ABCDEFGHIJKLMNPQRSTUVWXYZ]{8}", k) for k in keys)
+
+
+def test_a_request_too_large_for_zotero_is_split_and_sent_again():
+    from pyzotero import zotero_errors as ze
+
+    from slack_to_zotero import zotero_client
+    comment = [{"ts": "1", "author": "A", "text": "x" * 1000, "is_reply": False}]
+    papers = [{"url": f"https://a.org/{i}", "title": f"P{i}", "comments": comment}
+              for i in range(20)]
+
+    class Zot(FakeZotero):
+        def create_items(self, items, **kwargs):
+            if len(items) > 8:                          # Zotero: request body too large
+                raise ze.RequestEntityTooLargeError("413")
+            return super().create_items(items, **kwargs)
+    zot = Zot()
+    result = zotero_client.upload_papers(papers, zot)
+    assert result["uploaded"] == 20 and result["notes_added"] == 20 and result["failed"] == 0
+
+
+def test_a_single_item_too_large_for_zotero_fails_with_a_plain_message():
+    from pyzotero import zotero_errors as ze
+
+    from slack_to_zotero import zotero_client
+
+    class Zot(FakeZotero):
+        def create_items(self, items, **kwargs):
+            raise ze.RequestEntityTooLargeError("413")
+    papers = [{"url": "https://a.org/1", "title": "P", "comments": []}]
+    result = zotero_client.upload_papers(papers, Zot())
+    assert result["failed"] == 1 and "too large to save" in papers[0]["upload_error"]
