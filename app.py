@@ -78,9 +78,9 @@ def zotero_ready() -> bool:
 # ── Layout helpers ────────────────────────────────────────────────────────────
 
 # Steps not reached yet are faded, with a line saying what they wait for.
-# Stop, Remove, and Clear results are red; Move to Review is orange. A
+# Stop, Start over, Remove, and Clear results are red; Move to Review is orange. A
 # disabled button keeps Streamlit's grey.
-_RED = ["stop", "stop_confirm", "card_remove", "t_ready_remove", "t_left_remove",
+_RED = ["stop", "start_over", "stop_confirm", "card_remove", "t_ready_remove", "t_left_remove",
         "start_over_confirm", "new_search_confirm"]
 _ORANGE = ["t_ready_move"]
 
@@ -189,7 +189,7 @@ def step_export(job: scan.Job | None) -> None:
 
 def start_over_control() -> None:
     if not st.session_state.get("confirm_start_over"):
-        if st.button("Start over", type="tertiary", key="start_over"):
+        if st.button("Start over", key="start_over"):
             st.session_state.confirm_start_over = True
             st.rerun()
         return
