@@ -80,7 +80,7 @@ def test_start_page_shows_all_three_steps():
 def test_missing_zotero_config_is_reported(monkeypatch):
     monkeypatch.delenv("ZOTERO_API_KEY")
     at = _page()
-    assert "Zotero is not configured" in at.warning[0].value
+    assert "Zotero isn't set up" in at.warning[0].value
 
 
 def test_finished_scan_keeps_every_step_on_the_page():
