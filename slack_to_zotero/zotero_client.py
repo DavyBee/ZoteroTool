@@ -31,6 +31,28 @@ from .records import Paper
 BATCH_SIZE = 50          # Zotero API hard limit per create_items call
 
 
+def explain_error(exc: BaseException) -> str:
+    """A plain sentence for the usual Zotero failures, else the raw error."""
+    from pyzotero import zotero_errors as ze
+    try:
+        from httpx2 import TransportError
+    except ImportError:                       # pyzotero moved to another client
+        TransportError = OSError
+    if isinstance(exc, ze.UserNotAuthorisedError):
+        return "The Zotero key doesn't allow this. Check that it has write access to the library."
+    if isinstance(exc, ze.RequestEntityTooLargeError):      # 413: storage quota
+        return "The Zotero library is out of storage."
+    if isinstance(exc, ze.ResourceNotFoundError):
+        return "Zotero couldn't find the library or collection. Check the IDs in Settings."
+    # pyzotero reads Zotero's empty 429 reply as JSON (see _create_items).
+    rate_limited_reply = isinstance(exc, ValueError) and "Expecting value" in str(exc)
+    if rate_limited_reply or isinstance(exc, (ze.TooManyRequestsError, ze.TooManyRetriesError)):
+        return "Zotero is limiting requests. Wait a few minutes, then retry."
+    if isinstance(exc, (TransportError, URLError, TimeoutError, ConnectionError)):
+        return "Couldn't reach Zotero. Check the connection, then retry."
+    return f"{type(exc).__name__}: {exc}"
+
+
 def _create_items(zot, items, retries: int = 3):
     """zot.create_items, hardened against pyzotero's 429 handling bug.
 
@@ -83,6 +105,10 @@ _TYPE_SUPPORTS: dict[str, frozenset[str]] = {
     "webpage":         frozenset(["publisher"]),
     "podcast":         frozenset(["publisher"]),
 }
+
+# Types with an ISBN field (Zotero's schema, https://api.zotero.org/schema).
+# Zotero rejects an item that sends ISBN on any other type.
+_HAS_ISBN = frozenset(["book", "bookSection", "conferencePaper", "report", "thesis"])
 
 # Type names that aren't Zotero item types (the AI sometimes returns these),
 # mapped to the closest one. Anything still unknown becomes "webpage"
@@ -178,7 +204,7 @@ def upload_papers(
         except Exception as exc:
             # Network or authentication failure. "Retry failed" on the page
             # sends these again.
-            msg = f"batch upload failed: {exc}"
+            msg = explain_error(exc)
             for p in batch:
                 errors.append((p["url"], msg))
                 p["upload_error"] = msg
@@ -269,8 +295,10 @@ def _file_name(paper: dict, path: str) -> str:
     ext = os.path.splitext(path)[1].lower() or ".pdf"
     authors = paper.get("authors") or []
     first = authors[0].split(",")[0].strip() if authors else ""
-    parts = " ".join(x for x in (first, paper.get("year") or "") if x)
-    title = re.sub(r"[^\w\s\-]", "", paper.get("title") or "")[:80].strip()
+    def safe(text: str) -> str:                # letters, digits, spaces, hyphens
+        return re.sub(r"[^\w\s\-]", "", text or "").strip()
+    parts = " ".join(x for x in (safe(first)[:40], safe(paper.get("year") or "")) if x)
+    title = safe(paper.get("title") or "")[:80].strip()
     name = " - ".join(x for x in (parts, title) if x) or "Full Text"
     return re.sub(r"\s+", " ", name) + ext
 
@@ -340,6 +368,8 @@ def _http(method: str, url: str, data: bytes, headers: dict) -> bytes:
         with urlopen(req, timeout=120) as r:
             return r.read()
     except HTTPError as exc:
+        if exc.code == 413:                  # Zotero: the file would exceed the quota
+            raise RuntimeError("the Zotero library is out of storage") from None
         detail = exc.read().decode("utf-8", "replace")[:200]
         err = TransientError if exc.code >= 500 or exc.code == 429 else RuntimeError
         raise err(f"HTTP {exc.code}: {detail}") from None
@@ -390,7 +420,7 @@ def paper_to_zotero_item(paper: Paper) -> dict:
         item["issue"] = paper["issue"]
     if paper.get("pages") and "pages" in supported:
         item["pages"] = paper["pages"]
-    if paper.get("isbn"):
+    if paper.get("isbn") and item_type in _HAS_ISBN:
         item["ISBN"] = paper["isbn"]
 
     return item
@@ -402,8 +432,13 @@ def _build_creators(authors: list[str]) -> list[dict]:
         name = name.strip()
         if not name:
             continue
-        if ", " in name:
-            last, first = name.split(", ", 1)
+        if "," in name:                           # "Doe, Jane" or "Doe,Jane"
+            last, first = (part.strip() for part in name.split(",", 1))
+            if not last:                          # ", Jane" or ","
+                if first:
+                    creators.append({"creatorType": "author", "firstName": "",
+                                     "lastName": first})
+                continue
             creators.append({
                 "creatorType": "author",
                 "firstName":   first.strip(),

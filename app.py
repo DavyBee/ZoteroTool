@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 import sys
 import tempfile
-import time
+import unicodedata
 import zlib
 
 import streamlit as st
@@ -59,6 +59,7 @@ def _refresh_index(index: zotero_index.LibraryIndex) -> None:
 
 
 def start_job(papers: list[dict], source: dict) -> bool:
+    st.session_state.pop("confirm_stop", None)
     return scan.start_job(papers, config.anthropic_api_key(), str(config.LLM_AUDIT_PATH),
                           load_index=_load_index, refresh_index=_refresh_index,
                           source=source)
@@ -66,7 +67,7 @@ def start_job(papers: list[dict], source: dict) -> bool:
 
 def clear_job() -> None:
     scan.clear_job()
-    st.session_state.pop("confirm_start_over", None)
+    st.session_state.pop("confirm_clear_results", None)
 
 
 def zotero_ready() -> bool:
@@ -76,11 +77,36 @@ def zotero_ready() -> bool:
 # ── Layout helpers ────────────────────────────────────────────────────────────
 
 # Steps not reached yet are faded, with a line saying what they wait for.
-_STYLE = """
-<style>
-[class*="st-key-waiting-"] h3 { opacity: 0.4; }
-</style>
-"""
+# Stop, Clear results, Remove, and Clear results are red; Move to Review is orange. A
+# disabled button keeps Streamlit's grey.
+_RED = ["edit_drop_*", "stop", "clear_results", "stop_confirm", "card_remove", "t_ready_remove", "t_left_remove",
+        "clear_results_confirm"]
+_ORANGE = ["t_ready_move"]
+
+
+def _button_color(keys: list[str], color: str, hover: str) -> str:
+    # A key ending in "*" matches every key starting with the rest.
+    box = [f'[class*="st-key-{k[:-1]}"]' if k.endswith("*") else f".st-key-{k}" for k in keys]
+    sel = ", ".join(f"{b} button:not(:disabled)" for b in box)
+    hov = ", ".join(f"{b} button:not(:disabled):hover" for b in box)
+    return (f"{sel} {{ background-color: {color}; border-color: {color}; color: #fff; }}\n"
+            f"{hov} {{ background-color: {hover}; border-color: {hover}; color: #fff; }}\n")
+
+
+_STYLE = ("<style>\n"
+          '[class*="st-key-waiting-"] h3 { opacity: 0.4; }\n'
+          + _button_color(_RED, "#d93025", "#b3261e")
+          + _button_color(_ORANGE, "#e8710a", "#c35f08")
+          # Result sections: blue Ready, orange Review, red Removed, with a solid
+          # edge on the left. See-through
+          # tints, so the header text stays readable in light and dark themes.
+          + ".st-key-exp_ready summary { background-color: rgba(66, 133, 244, 0.28); "
+             "box-shadow: inset 4px 0 rgb(66, 133, 244); }\n"
+          + ".st-key-exp_left summary { background-color: rgba(232, 113, 10, 0.28); "
+             "box-shadow: inset 4px 0 rgb(232, 113, 10); }\n"
+          + ".st-key-exp_removed summary { background-color: rgba(217, 48, 37, 0.28); "
+             "box-shadow: inset 4px 0 rgb(217, 48, 37); }\n"
+          + "</style>")
 
 
 def step_header(number: int, title: str, state: str) -> None:
@@ -117,7 +143,7 @@ def step_export(job: scan.Job | None) -> None:
         step_header(1, "Slack export", DONE_STATE)
         summary([job.source.get("label") or "Slack export"], done=True)
         if job.snapshot()["phase"] in (scan.SCANNED, scan.DONE, scan.FAILED):
-            start_over_control()
+            clear_results_control()
         return
 
     step_header(1, "Slack export", CURRENT)
@@ -152,11 +178,15 @@ def step_export(job: scan.Job | None) -> None:
 
     if st.button("Search for sources", type="primary",
                  disabled=not files or not zotero_ready()):
-        with tempfile.TemporaryDirectory() as tmp:
-            export = scan.read_export([(f.name, f.getvalue()) for f in files], tmp)
-            chosen = channel if channel is not None else next(iter(export.channels))
-            day_files = export.channels[chosen]
-            papers = scan.collect_papers(day_files, export.user_map)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                export = scan.read_export([(f.name, f.getvalue()) for f in files], tmp)
+                chosen = channel if channel is not None else next(iter(export.channels))
+                day_files = export.channels[chosen]
+                papers = scan.collect_papers(day_files, export.user_map)
+        except Exception as exc:
+            st.error(f"Could not read this export. {type(exc).__name__}: {exc}")
+            return
         if not papers:
             st.info("No links or documents found in this export.")
             return
@@ -167,19 +197,36 @@ def step_export(job: scan.Job | None) -> None:
         st.rerun()
 
 
-def start_over_control() -> None:
-    if not st.session_state.get("confirm_start_over"):
-        if st.button("Start over", type="tertiary", key="start_over"):
-            st.session_state.confirm_start_over = True
-            st.rerun()
-        return
-    st.caption("This clears the search results from the page. Items already uploaded stay in Zotero.")
-    c1, c2, _ = st.columns([1, 1, 6])
-    if c1.button("Clear results", type="primary", key="start_over_confirm"):
+def clear_results_control() -> None:
+    # The dialog opens at the end of main(), so it can't clash with the
+    # upload confirmation opened further down the page.
+    if st.button("Clear results", key="clear_results"):
+        st.session_state.confirm_clear_results = True
+
+
+def _close_clear_results() -> None:
+    st.session_state.pop("confirm_clear_results", None)
+
+
+@st.dialog("Clear results", on_dismiss=_close_clear_results)
+def confirm_clear_results() -> None:
+    job = scan.current_job()
+    if job is not None:
+        ready = ready_items(job.items(scan.READY), job.items(scan.REVIEW))
+        review = [p for p in job.items(scan.REVIEW) if not p.get("zotero_key")]
+        left = sum(1 for p in review if not p.get("decision"))
+        removed = sum(1 for p in review if p.get("decision") == "removed")
+        st.write(f"This clears, for everyone using the app:  \n"
+                 f"{_plural(len(ready), 'item')} in Ready  \n"
+                 f"{_plural(left, 'item')} in Left to review  \n"
+                 f"{_plural(removed, 'item')} in Removed")
+    st.write("Items already uploaded stay in Zotero.")
+    row = st.container(horizontal=True)
+    if row.button("Clear results", key="clear_results_confirm"):
         clear_job()
         st.rerun()
-    if c2.button("Cancel", type="tertiary", key="start_over_cancel"):
-        st.session_state.pop("confirm_start_over", None)
+    if row.button("Cancel", key="clear_results_cancel"):
+        _close_clear_results()
         st.rerun()
 
 
@@ -189,6 +236,7 @@ def start_over_control() -> None:
 def progress(job: scan.Job, phase: str) -> None:
     snap = job.snapshot()
     if snap["phase"] != phase:
+        st.session_state.pop("confirm_stop", None)   # no stale prompt for the next search
         st.rerun()                       # finished: redraw the whole page
     step = "Paused" if snap["paused"] else snap["step"]
     if snap["step"] in ("Searching", "Uploading"):
@@ -205,18 +253,9 @@ def progress(job: scan.Job, phase: str) -> None:
 
 
 def search_controls(job: scan.Job, snap: dict) -> None:
-    """Pause or Resume keeps the results so far; Stop clears everything."""
-    if st.session_state.get("confirm_stop"):
-        st.caption("This stops the search and clears its results.")
-        row = st.container(horizontal=True)
-        if row.button("Stop and clear", type="primary", key="stop_confirm"):
-            st.session_state.pop("confirm_stop", None)
-            scan.discard_job()
-            st.rerun(scope="app")
-        if row.button("Cancel", type="tertiary", key="stop_cancel"):
-            st.session_state.pop("confirm_stop", None)
-            st.rerun()
-        return
+    """Pause or Resume keeps the results so far; Stop clears everything,
+    after asking in a dialog (opened from step_scan, outside this fragment).
+    The search is paused while the dialog is open."""
     row = st.container(horizontal=True)
     if snap["paused"]:
         if row.button("Resume", type="primary", key="resume"):
@@ -226,7 +265,33 @@ def search_controls(job: scan.Job, snap: dict) -> None:
         job.pause()
         st.rerun()
     if row.button("Stop", key="stop"):
+        if not snap["paused"]:
+            job.pause()
+            st.session_state.stop_paused = True   # resume it if Stop is cancelled
         st.session_state.confirm_stop = True
+        st.rerun(scope="app")
+
+
+def _cancel_stop() -> None:
+    """Close the Stop dialog, resuming the search if the dialog paused it."""
+    st.session_state.pop("confirm_stop", None)
+    if st.session_state.pop("stop_paused", False):
+        job = scan.current_job()
+        if job is not None:
+            job.resume()
+
+
+@st.dialog("Stop search", on_dismiss=_cancel_stop)
+def confirm_stop() -> None:
+    st.write("This stops the search and clears its results.")
+    row = st.container(horizontal=True)
+    if row.button("Stop and clear", key="stop_confirm"):
+        st.session_state.pop("confirm_stop", None)
+        st.session_state.pop("stop_paused", None)
+        scan.discard_job()
+        st.rerun()
+    if row.button("Cancel", key="stop_cancel"):
+        _cancel_stop()
         st.rerun()
 
 
@@ -274,6 +339,10 @@ def _decide(job: scan.Job, items: list[dict], i: int, decision: str,
 
 def _stop_editing() -> None:
     st.session_state.pop("editing_url", None)
+    # The author boxes too, so a later edit starts from the saved names.
+    for key in [k for k in st.session_state
+                if str(k).startswith(("edit_rows_", "edit_next_", "edit_first_", "edit_last_"))]:
+        del st.session_state[key]
 
 
 def _start_editing(url: str) -> None:
@@ -285,7 +354,7 @@ def _save_card(job: scan.Job, p: dict) -> None:
     get = lambda name: (st.session_state.get(f"edit_{name}_{k}") or "").strip()
     job.edit(p["url"], {
         "title": get("title") or None,
-        "authors": [a.strip() for a in get("authors").split(";") if a.strip()],
+        "authors": _typed_authors(k),
         "year": get("year") or None,
         "item_type": st.session_state.get(f"edit_type_{k}") or p.get("item_type"),
         "journal": get("journal") or None})
@@ -294,10 +363,10 @@ def _save_card(job: scan.Job, p: dict) -> None:
 
 
 def review_section(job: scan.Job, items: list[dict], locked: bool) -> None:
-    """Review in three collapsible parts: items still to decide (as cards or
-    an editable table), items marked for upload, and removed items."""
+    """Review in two collapsible parts: items still to decide (as cards or
+    an editable table) and removed items. Items marked ready for upload are
+    shown under Ready."""
     undecided = [q for q in items if not q.get("decision")]
-    marked = [q for q in items if q.get("decision") in ("correct", "edited")]
     removed = [q for q in items if q.get("decision") == "removed"]
 
     with st.expander(f"Left to review ({len(undecided)})", expanded=True,
@@ -308,23 +377,32 @@ def review_section(job: scan.Job, items: list[dict], locked: bool) -> None:
             st.caption("Could not be identified, or probably not a source. "
                        "Only items marked ready for upload are uploaded.")
             view = st.radio("Review view", ["Cards", "Table"], horizontal=True,
-                            label_visibility="collapsed", key="review_view")
+                            label_visibility="collapsed", key="review_view",
+                            disabled=_tables_have_unsaved_edits())
             if view == "Cards":
                 _card(job, undecided, locked)
             else:
                 _review_table(job, undecided, locked)
-    _decided_table("Marked for upload", marked, job, locked, "exp_marked")
     _decided_table("Removed", removed, job, locked, "exp_removed")
 
 
 def _decided_table(label: str, items: list[dict], job: scan.Job, locked: bool,
                    key: str) -> None:
-    """A collapsed table of decided items; Undo sends selected rows back."""
+    """A collapsed table of removed items; Undo sends selected rows back."""
     with st.expander(f"{label} ({len(items)})", key=key):
         if not items:
             st.caption("None yet.")
             return
         _item_table(job, items, f"t_{key}", locked, "decided")
+
+
+def _tables_have_unsaved_edits() -> bool:
+    """Whether a table has edited cells not yet saved (ticks don't count)."""
+    for key, state in st.session_state.items():
+        if isinstance(key, str) and key.startswith("t_") and isinstance(state, dict):
+            if any(set(change) - {"Select"} for change in state.get("edited_rows", {}).values()):
+                return True
+    return False
 
 
 def _bump_table() -> None:
@@ -337,12 +415,21 @@ def _review_table(job: scan.Job, items: list[dict], locked: bool) -> None:
     _item_table(job, items, "t_left", locked, "left")
 
 
+def ready_items(ready: list[dict], review: list[dict]) -> list[dict]:
+    """What the Ready table shows: items the search found plus those marked
+    ready in Review, the marked ones first with the newest at the top.
+    Uploaded items are left out."""
+    marked = [p for p in review if p.get("decision") in ("correct", "edited")]
+    return sorted((p for p in ready + marked if not p.get("zotero_key")),
+                  key=lambda p: (-(p.get("marked_at") or 0), scan._sort_title(p)))
+
+
 def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
                 mode: str, show_status: bool = False) -> None:
     """Items as an editable table: tick rows in the first column, then act on
     them with the buttons below. Title, authors, year, and journal can be
     changed in place and are kept with Save edits. `mode` is "ready",
-    "left" (to review), or "decided" (marked for upload, or removed)."""
+    "left" (to review), or "decided" (removed)."""
     rows = []
     for p in items:
         row = {"Select": False, "Link": p["url"]}
@@ -355,23 +442,32 @@ def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
                     "Year": p.get("year") or "", "Journal": p.get("journal") or ""})
         if mode != "ready":
             row["Summary"] = p.get("summary") or ""
+        else:
+            row["Added by"] = "User" if p.get("decision") else "Search"
         rows.append(row)
     urls = [p["url"] for p in items]
     key = f"{name}_{st.session_state.get('table_version', 0)}"
     columns = list(rows[0])
+    ready = mode == "ready"
+    # Columns keep these widths (a stretched table would give every column
+    # the same extra space), so Title and Authors get most of the room.
+    # 50 px is the narrowest Streamlit allows.
     st.data_editor(
-        rows, key=key, hide_index=True,
-        disabled=columns if locked else ["Link", "Status", "Reason", "Summary"],
+        rows, key=key, hide_index=True, width="content",
+        disabled=columns if locked else ["Link", "Status", "Reason", "Summary", "Added by"],
         column_config={
-            "Select": st.column_config.CheckboxColumn("", width=40),
-            "Link": st.column_config.LinkColumn(display_text="Open", width=50),
-            "Status": st.column_config.TextColumn(width=90),
-            "Reason": st.column_config.TextColumn(width=170),
-            "Title": st.column_config.TextColumn(width="medium" if mode != "ready" else "large"),
-            "Authors": st.column_config.TextColumn(width=180, help="Last, First; Last, First"),
-            "Year": st.column_config.TextColumn(width=70),
-            "Journal": st.column_config.TextColumn(width=150),
-            "Summary": st.column_config.TextColumn(width=220),
+            "Select": st.column_config.CheckboxColumn("", width=50, pinned=True),
+            "Link": st.column_config.LinkColumn(display_text="Open", width=50, pinned=True),
+            "Status": st.column_config.TextColumn(width=80),
+            "Reason": st.column_config.TextColumn(width=160),
+            "Title": st.column_config.TextColumn(width=560 if ready else 420),
+            "Authors": st.column_config.TextColumn("Authors (Last, First; Last, First; ...)",
+                                                   width=320 if ready else 240,
+                                                   help="Separate authors with semicolons"),
+            "Year": st.column_config.TextColumn(width=55),
+            "Journal": st.column_config.TextColumn(width=170),
+            "Summary": st.column_config.TextColumn(width=240),
+            "Added by": st.column_config.TextColumn(width=75),
         },
     )
     changes = st.session_state.get(key, {}).get("edited_rows", {})
@@ -389,7 +485,7 @@ def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
     def act(label: str, action: str, primary: bool = False) -> None:
         bar.button(f"{label} ({n})" if n else label,
                    type="primary" if primary else "secondary",
-                   disabled=locked or not n, key=f"{name}_{label}",
+                   disabled=locked or not n, key=f"t_{mode}_{action}",   # one table per mode
                    on_click=table_action, args=(job, action, chosen))
 
     if mode == "decided":
@@ -408,7 +504,10 @@ def table_action(job: scan.Job, action: str, items: list[dict]) -> None:
         if action == "undo":
             job.decide(p["url"], None)
         elif action == "move":
-            job.move_to_review(p["url"])
+            if p.get("bucket") == scan.READY:
+                job.move_to_review(p["url"])
+            else:
+                job.decide(p["url"], None)        # marked in Review: back to undecided
         elif action == "mark":
             mark_for_upload(job, [p])
         elif action == "remove":
@@ -449,10 +548,12 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
     i = urls.index(current) if current in urls else 0
     p = items[i]
 
+    # Moving away mid-edit would drop the edits, so finish or cancel first.
+    editing_here = st.session_state.get("editing_url") == p["url"]
     nav = st.container(horizontal=True, vertical_alignment="center")
-    nav.button("Previous", disabled=i == 0, key="card_prev",
+    nav.button("Previous", disabled=i == 0 or editing_here, key="card_prev",
                on_click=_go_to, args=(urls[max(i - 1, 0)],))
-    nav.button("Next", disabled=i == len(items) - 1, key="card_next",
+    nav.button("Next", disabled=i == len(items) - 1 or editing_here, key="card_next",
                on_click=_go_to, args=(urls[min(i + 1, len(urls) - 1)],))
     nav.caption(f"{i + 1} of {len(items)}")
 
@@ -478,12 +579,15 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
                        p.get("journal") or (scan.site_name(p["url"])
                                             if p.get("item_type") == "webpage" else None)),
             ]
-        lines += [f"**Link:** [{_md(_short_link(p['url']))}]({p['url']})",
+        # <...> around the address keeps one with brackets, like
+        # wiki/Eviction_(law), from breaking the link.
+        lines += [f"**Link:** [{_md(_short_link(p['url']))}](<{p['url']}>)",
                   _field("Link summary", p.get("summary"))]
         comments = p.get("comments") or []
         if comments:
             first = comments[0]
-            text = (first.get("text") or "").strip()
+            # One line, so a message with blank lines keeps the card compact.
+            text = " ".join((first.get("text") or "").split())
             if text:
                 quote = _md(text[:400] + ("..." if len(text) > 400 else ""))
                 body = f'{_md(first.get("author") or "")}: "{quote}"'
@@ -511,21 +615,81 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
 def _edit_fields(p: dict) -> dict:
     """The card's details as inputs, in place of the plain text."""
     k = zlib.crc32(p["url"].encode())      # one set of inputs per item
-    title = st.text_input("Title", value=p.get("title") or p.get("slack_file_name") or "",
+    title = st.text_input("**Title**", value=p.get("title") or p.get("slack_file_name") or "",
                           key=f"edit_title_{k}")
-    authors = st.text_input("Authors", value="; ".join(p.get("authors") or []),
-                            help="Last, First; Last, First", key=f"edit_authors_{k}")
+    _author_rows(p, k)
     c1, c2, c3 = st.columns([1, 2, 3])
-    year = c1.text_input("Year", value=p.get("year") or "", key=f"edit_year_{k}")
+    year = c1.text_input("**Year**", value=p.get("year") or "", key=f"edit_year_{k}")
     kind = p.get("item_type") if p.get("item_type") in _ITEM_TYPES else "journalArticle"
-    item_type = c2.selectbox("Type", _ITEM_TYPES, index=_ITEM_TYPES.index(kind),
+    item_type = c2.selectbox("**Type**", _ITEM_TYPES, index=_ITEM_TYPES.index(kind),
                              key=f"edit_type_{k}")
-    journal = c3.text_input("Journal or website", value=p.get("journal") or "",
+    journal = c3.text_input("**Journal or website**", value=p.get("journal") or "",
                             key=f"edit_journal_{k}")
     return {"title": title.strip() or None,
-            "authors": [a.strip() for a in authors.split(";") if a.strip()],
+            "authors": _typed_authors(k),
             "year": year.strip() or None, "item_type": item_type,
             "journal": journal.strip() or None}
+
+
+def _split_name(author: str) -> tuple[str, str]:
+    """A stored author ("Last, First", or one name) as (first, last)."""
+    last, _, first = author.partition(",")
+    return first.strip(), last.strip()
+
+
+def _author_rows(p: dict, k: int) -> None:
+    """One row per author, with first and last name in separate boxes. An
+    organisation (or any single name) goes in the last-name box."""
+    rows_key = f"edit_rows_{k}"
+    if rows_key not in st.session_state:
+        authors = p.get("authors") or []
+        st.session_state[rows_key] = list(range(max(len(authors), 1)))
+        st.session_state[f"edit_next_{k}"] = len(st.session_state[rows_key])
+        for rid, author in enumerate(authors):
+            first, last = _split_name(author)
+            st.session_state[f"edit_first_{k}_{rid}"] = first
+            st.session_state[f"edit_last_{k}_{rid}"] = last
+    rows = st.session_state[rows_key]
+    st.markdown('<p style="font-size:14px;margin:0 0 4px"><b>Authors</b></p>',
+                unsafe_allow_html=True)
+    for n, rid in enumerate(rows):
+        c1, c2, c3 = st.columns([3, 3, 1], vertical_alignment="bottom")
+        shown = "visible" if n == 0 else "collapsed"
+        c1.text_input("First name", key=f"edit_first_{k}_{rid}", label_visibility=shown)
+        c2.text_input("Last name *(or organisation)*", key=f"edit_last_{k}_{rid}",
+                      label_visibility=shown)
+        c3.button("Remove", key=f"edit_drop_{k}_{rid}",
+                  on_click=_drop_author, args=(k, rid))
+    st.button("Add author", key=f"edit_add_{k}", on_click=_add_author, args=(k,))
+
+
+def _add_author(k: int) -> None:
+    """A new empty row. Row ids aren't reused, so a removed row's text
+    can't come back in a new one."""
+    rid = st.session_state[f"edit_next_{k}"]
+    st.session_state[f"edit_next_{k}"] = rid + 1
+    st.session_state[f"edit_rows_{k}"].append(rid)
+
+
+def _drop_author(k: int, rid: int) -> None:
+    rows = st.session_state[f"edit_rows_{k}"]
+    rows.remove(rid)
+    if not rows:                       # always leave one row to type in
+        _add_author(k)
+
+
+def _typed_authors(k: int) -> list[str]:
+    """The author rows as stored names: "Last, First", or just the one name
+    given. Empty rows are left out."""
+    authors = []
+    for rid in st.session_state.get(f"edit_rows_{k}", []):
+        first = (st.session_state.get(f"edit_first_{k}_{rid}") or "").strip()
+        last = (st.session_state.get(f"edit_last_{k}_{rid}") or "").strip()
+        if first and last:
+            authors.append(f"{last}, {first}")
+        elif first or last:
+            authors.append(first or last)
+    return authors
 
 
 def _field(label: str, value) -> str:
@@ -544,16 +708,23 @@ def _short_link(url: str) -> str:
     return text if len(text) <= 60 else text[:57] + "..."
 
 
+def _plain(text: str) -> str:
+    """Lowercase without accents, so "colmsjo" finds "Colmsjö"."""
+    decomposed = unicodedata.normalize("NFKD", text.casefold())
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+
+
 def _matching(items: list[dict], query: str) -> list[dict]:
     """Items containing every word of the search."""
-    words = query.lower().split()
+    words = _plain(query).split()
     if not words:
         return items
 
     def text(p: dict) -> str:
-        return " ".join([p.get("title") or "", " ".join(p.get("authors") or []),
-                         p.get("journal") or "", p["url"], p.get("reason") or "",
-                         p.get("summary") or ""]).lower()
+        return _plain(" ".join([
+            p.get("title") or "", p.get("slack_file_name") or "",
+            " ".join(p.get("authors") or []), p.get("journal") or "", p["url"],
+            p.get("reason") or "", p.get("summary") or ""]))
     return [p for p in items if all(w in text(p) for w in words)]
 
 
@@ -571,43 +742,60 @@ def step_scan(job: scan.Job | None) -> None:
     if phase == scan.SCANNING:
         step_header(2, "Results of search", CURRENT)
         progress(job, scan.SCANNING)
+        if st.session_state.get("confirm_stop"):
+            confirm_stop()
         return
 
     if phase == scan.FAILED:
         step_header(2, "Results of search", CURRENT)
         st.error(snap["fatal_error"])
+        if st.button("Try again", type="primary", key="retry_search"):
+            scan.retry_job()
+            st.rerun()
         return
 
     ready, review = job.items(scan.READY), job.items(scan.REVIEW)
     existing = job.items(scan.EXISTING)
     step_header(2, "Results of search", DONE_STATE)
-    took = _minutes((job.finished_at or time.time()) - job.started_at)
+    took = _minutes(job.search_seconds())
     summary([f"Searched {job.n_sources} in {took}", f"{len(ready)} ready",
              f"{len(review)} review", f"{len(existing)} already in Zotero"], done=True)
     if snap["fatal_error"]:
         st.error("The search stopped because of an error. Items it didn't reach are in Review.")
         with st.expander("Details"):
             st.code(snap["fatal_error"], language=None)
+    if snap["llm_problem"]:
+        st.warning(f"{snap['llm_problem']} Items that needed the AI step are in Review; "
+                   "search again once it's fixed.")
 
     uploaded_any = any(_status(p) for p in ready + review)
     locked = phase == scan.UPLOADING
 
+    # Changing the search redraws the tables, which would drop unsaved edits.
+    editing = _tables_have_unsaved_edits()
     query = st.text_input("Search results", placeholder="Title, author, journal, or link",
-                          key="results_query", type="search", live=True) or ""
-    # Uploaded items leave the Ready table; step 3 reports them.
-    ready = [p for p in ready if not p.get("zotero_key")]
+                          key="results_query", type="search", live=True,
+                          disabled=editing) or ""
+    if editing:
+        st.caption("Save or cancel the table edits to search.")
+    # Ready shows everything that will be uploaded: items the search found
+    # plus those marked ready in Review. Uploaded items leave it; step 3
+    # reports them.
+    ready = ready_items(ready, review)
     shown_ready, shown_review = _matching(ready, query), _matching(review, query)
     # A different key per search, so a ticked box can't carry over to the
     # wrong row when the list changes.
     suffix = zlib.crc32(query.strip().lower().encode())
 
-    if ready or not uploaded_any:
-        with st.expander(f"Ready ({_count(shown_ready, ready)})", expanded=True,
-                         key="exp_ready"):
-            if shown_ready:
-                st.caption("Metadata found. These are uploaded unless moved to Review or removed.")
-                _item_table(job, shown_ready, f"t_ready_{suffix}", locked, "ready",
-                            show_status=uploaded_any)
+    # Uploaded items leave Ready; the section stays, at 0 once all are sent.
+    with st.expander(f"Ready ({_count(shown_ready, ready)})", expanded=True,
+                     key="exp_ready"):
+        if shown_ready:
+            st.caption("Metadata found. These are uploaded unless moved to Review or removed.")
+            _item_table(job, shown_ready, f"t_ready_{suffix}", locked, "ready",
+                        show_status=uploaded_any)
+        elif not ready:
+            st.caption("Nothing ready to upload.")
 
     review_section(job, shown_review, locked)
 
@@ -657,13 +845,14 @@ def step_upload(job: scan.Job | None) -> None:
             parts.append(f"{len(failed)} failed")
         skipped = snap["skipped_existing"]
         if skipped:
-            parts.append(f"{skipped} skipped because they were added to Zotero after the search")
+            parts.append(f"{skipped} skipped as duplicates")
         summary(parts, done=finished)
         if failed:
             st.dataframe([{"Title": p.get("title") or p["url"], "Error": p["upload_error"]}
                           for p in failed], hide_index=True)
+        # Problems with an uploaded item's file or note; failed items are listed above.
         warnings = [msg for _url, msg in (snap["upload_result"] or {}).get("errors", [])
-                    if not msg.startswith(("upload failed", "batch upload failed"))]
+                    if msg.startswith(("pdf_attach", "note upload"))]
         if warnings:
             with st.expander(f"Warnings ({len(warnings)})"):
                 st.write("These items were uploaded without some of their files or notes.")
@@ -673,9 +862,10 @@ def step_upload(job: scan.Job | None) -> None:
         what = "more selected" if has_uploaded else "selected"
         st.caption(f"{n_selected} {what}.")
         label = "Retry failed" if failed and n_selected == len(failed) else \
-            f"Upload {n_selected} to Zotero"
+            f"Upload {n_selected} ready {'item' if n_selected == 1 else 'items'} to Zotero"
         if st.button(label, type="primary", disabled=not zotero_ready()):
             unmarked = _left_out(job)
+            st.session_state.pop("confirm_clear_results", None)   # one dialog at a time
             if unmarked:
                 confirm_upload(job, n_selected, unmarked)
             else:
@@ -683,12 +873,6 @@ def step_upload(job: scan.Job | None) -> None:
                 st.rerun()
     elif not has_uploaded:
         st.caption("Nothing selected to upload.")
-
-    if has_uploaded:
-        if st.button("New search", type="tertiary" if n_selected else "primary",
-                     key="new_search"):
-            clear_job()
-            st.rerun()
 
 
 def _left_out(job: scan.Job) -> int:
@@ -749,7 +933,7 @@ def main() -> None:
     st.markdown(_STYLE, unsafe_allow_html=True)
     st.title("Slack to Zotero", anchor=False)
     if not zotero_ready():
-        st.warning("Zotero is not configured.")
+        st.warning("Zotero isn't set up. Add the Zotero key and library ID to the app's secrets.")
 
     job = scan.current_job()
     step_export(job)
@@ -759,6 +943,9 @@ def main() -> None:
     step_upload(job)
     st.divider()
     render_settings()
+    if st.session_state.get("confirm_clear_results") and job is not None \
+            and job.snapshot()["phase"] in (scan.SCANNED, scan.DONE, scan.FAILED):
+        confirm_clear_results()
 
 
 main()

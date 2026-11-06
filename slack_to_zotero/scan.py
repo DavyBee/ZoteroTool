@@ -11,6 +11,7 @@ No Streamlit imports here, so the whole flow is testable without the UI.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -18,6 +19,7 @@ import threading
 import time
 import traceback
 import zipfile
+from pathlib import Path
 from urllib.parse import urlsplit
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -255,6 +257,11 @@ class Job:
         self.stop_requested = False
         self._running = threading.Event()        # cleared while paused
         self._running.set()
+        # While paused, the page shows progress as it was when Pause was
+        # pressed; items already being looked up finish out of sight.
+        self._shown_at_pause: Optional[tuple[int, list[str]]] = None   # (done, log)
+        self._paused_at: Optional[float] = None
+        self._paused_for = 0.0
         self.started_at = time.time()
         self.upload_result: Optional[dict] = None
         self.fatal_error: Optional[str] = None
@@ -274,11 +281,26 @@ class Job:
 
     def pause(self) -> None:
         """Hold the search after the items in progress; resume() continues it."""
-        if not self.stop_requested:
-            self._running.clear()
+        with self.lock:
+            if not self.stop_requested and self._running.is_set():
+                self._paused_at = time.time()
+                self._shown_at_pause = (self.done, list(self.log))
+                self._running.clear()
 
     def resume(self) -> None:
-        self._running.set()
+        with self.lock:
+            if not self._running.is_set():
+                self._paused_for += time.time() - (self._paused_at or time.time())
+                self._paused_at = None
+            self._shown_at_pause = None
+            self._running.set()
+
+    def search_seconds(self) -> float:
+        """How long the search took, not counting time paused."""
+        with self.lock:
+            end = self.finished_at or time.time()
+            paused = self._paused_for + (end - self._paused_at if self._paused_at else 0)
+            return max(end - self.started_at - paused, 0)
 
     def _mark_existing(self, paper: dict, hit: tuple[str, str]) -> None:
         paper["existing_key"], paper["existing_how"] = hit
@@ -301,12 +323,14 @@ class Job:
             return {"metadata_source": "none", "scan_error": f"{type(exc).__name__}: {exc}"}
 
     def _run_scan(self) -> None:
+        metadata.llm_problem = None
         if self._load_index is not None:
             try:
                 index = self._load_index()
             except Exception as exc:
                 with self.lock:
-                    self.fatal_error = f"Could not read the Zotero library. {exc}"
+                    from .zotero_client import explain_error
+                    self.fatal_error = f"Could not read the Zotero library. {explain_error(exc)}"
                     self.finished_at = time.time()
                     self.phase = FAILED
                 return
@@ -314,18 +338,18 @@ class Job:
                 self.index = index
                 self.step = "Searching"
 
-        to_scan = []
-        with self.lock:
-            for p in self.papers:
-                hit = self.index.match_identifiers(p) if self.index else None
-                if hit:
-                    self._mark_existing(p, hit)
-                    self.done += 1
-                    self.log.append(f"{_label(p)}  {p['url']}")
-                else:
-                    to_scan.append(p)
-
         try:
+            to_scan = []
+            with self.lock:
+                for p in self.papers:
+                    hit = self.index.match_identifiers(p) if self.index else None
+                    if hit:
+                        self._mark_existing(p, hit)
+                        self.done += 1
+                        self.log.append(f"{_label(p)}  {p['url']}")
+                    else:
+                        to_scan.append(p)
+
             with ThreadPoolExecutor(max_workers=WORKERS) as pool:
                 futures = {pool.submit(self._enrich_one, p): p for p in to_scan}
                 for fut in as_completed(futures):
@@ -345,14 +369,20 @@ class Job:
         except Exception:
             with self.lock:
                 self.fatal_error = traceback.format_exc()
+        # Paused as the last items finished: show the results only on Resume
+        # (or Stop), so nothing changes on the page while it says Paused.
+        self._running.wait()
         with self.lock:
             for p in self.papers:                  # anything the pool never reached
                 if "bucket" not in p:
                     p.update(not_scanned=True, metadata_source="none")
                     p["bucket"], p["reason"] = classify(p)
                     p["include"] = False
-            self._merge_duplicates()
-            self._label_working_papers()
+            try:
+                self._merge_duplicates()
+                self._label_working_papers()
+            except Exception:
+                self.fatal_error = traceback.format_exc()
             self.finished_at = time.time()
             self.phase = SCANNED
 
@@ -412,10 +442,35 @@ class Job:
             else _sort_title
         return sorted(rows, key=key)
 
+    def delete_files(self) -> None:
+        """Delete the PDFs this search downloaded. Uploaded ones are already
+        attached in Zotero; the rest go with the cleared results."""
+        from . import config
+        folder = config.PDFS_DIR.resolve()
+        for p in self.papers:
+            path = p.get("local_pdf_path")
+            if not path:
+                continue
+            try:
+                target = Path(path).resolve()
+                if target.parent == folder:          # only files the app saved
+                    target.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _changeable(self) -> bool:
+        """Items can change only between a scan and an upload, not while
+        either runs (a click from a page drawn earlier can still arrive)."""
+        return self.phase in (SCANNED, DONE)
+
     def set_include(self, url: str, include: bool) -> None:
         with self.lock:
+            if not self._changeable():
+                return
             for p in self.papers:
                 if p["url"] == url and p.get("bucket") != EXISTING:
+                    if include and p.get("decision") == "removed":
+                        return                     # Undo the removal first
                     p["include"] = include
                     return
 
@@ -429,6 +484,8 @@ class Job:
         """Record a review decision (None clears it), applying edited fields."""
         assert decision is None or decision in self.DECISIONS
         with self.lock:
+            if not self._changeable():
+                return
             for p in self.papers:
                 if p["url"] == url and p.get("bucket") == REVIEW:
                     if fields:
@@ -438,11 +495,17 @@ class Job:
                     else:
                         p["decision"] = decision
                     p["include"] = decision in ("correct", "edited")
+                    if p["include"]:
+                        p["marked_at"] = time.time()   # newest first in Ready
+                    else:
+                        p.pop("marked_at", None)
                     return
 
     def move_to_review(self, url: str) -> None:
         """Send a Ready item to Review, to decide on it there."""
         with self.lock:
+            if not self._changeable():
+                return
             for p in self.papers:
                 if p["url"] == url and p.get("bucket") == READY \
                         and not p.get("zotero_key"):
@@ -454,6 +517,8 @@ class Job:
     def edit(self, url: str, fields: dict) -> None:
         """Change a Ready or Review item's details (without deciding on it)."""
         with self.lock:
+            if not self._changeable():
+                return
             for p in self.papers:
                 if p["url"] == url and p.get("bucket") in (READY, REVIEW) \
                         and not p.get("zotero_key"):
@@ -494,25 +559,42 @@ class Job:
         self._thread.start()
 
     def _recheck(self, papers: list[dict]) -> list[dict]:
-        """Drop anything added to Zotero since the scan read it."""
-        if self._refresh_index is None or self.index is None:
-            return papers
-        try:
-            self._refresh_index(self.index)
-        except Exception:
-            return papers                  # the upload itself will report it
+        """Drop anything added to Zotero since the scan read it, and anything
+        that is the same work as another item in this upload (two items can
+        be edited into one). Ready items are kept over Review items."""
+        if self._refresh_index is not None and self.index is not None:
+            try:
+                self._refresh_index(self.index)
+            except Exception:
+                pass                       # still check against what was read before
+        from .zotero_client import paper_to_zotero_item
+        batch = LibraryIndex()
         out = []
         with self.lock:
-            for p in papers:
-                hit = self.index.match(p)
+            for p in sorted(papers, key=lambda p: p.get("bucket") != READY):
+                hit = self.index.match(p) if self.index is not None else None
                 if hit:
                     self._mark_existing(p, hit)
-                else:
-                    out.append(p)
+                    continue
+                twin = batch.match(p)
+                if twin:
+                    self._mark_same_as(p, twin[0])
+                    continue
+                batch.add({**paper_to_zotero_item(p), "key": p["url"]})
+                out.append(p)
+            out.sort(key=papers.index)
             self.skipped_existing = len(papers) - len(out)
             self.total = len(out)
             self.step = "Uploading"
         return out
+
+    def _mark_same_as(self, paper: dict, url: str) -> None:
+        """Leave out an item that duplicates another one in the same upload."""
+        other = next(p for p in self.papers if p["url"] == url)
+        paper.update(existing_key=url, existing_how="Same as another item in this upload",
+                     existing_title=other.get("title"), existing_url=url)
+        paper["bucket"], paper["reason"] = classify(paper)
+        paper["include"] = False
 
     def _run_upload(self, papers, make_client, upload) -> None:
         def progress(done: int, total: int) -> None:
@@ -522,8 +604,8 @@ class Job:
         def log(line: str) -> None:
             with self.lock:
                 self.log.append(line)
-        papers = self._recheck(papers)
         try:
+            papers = self._recheck(papers)
             result = upload(papers, make_client(), progress_cb=progress, log_cb=log) if papers \
                 else {"uploaded": 0, "failed": 0, "errors": []}
         except Exception as exc:
@@ -539,13 +621,17 @@ class Job:
 
     def snapshot(self) -> dict:
         with self.lock:
+            done, log = self.done, list(self.log)
+            if self._shown_at_pause and not self._running.is_set():
+                done, log = self._shown_at_pause
             return {"phase": self.phase, "step": self.step,
-                    "done": self.done, "total": self.total,
-                    "log": list(self.log), "fatal_error": self.fatal_error,
+                    "done": done, "total": self.total,
+                    "log": list(log), "fatal_error": self.fatal_error,
                     "upload_result": self.upload_result,
                     "skipped_existing": self.skipped_existing,
                     "stopping": self.stop_requested and self.phase == SCANNING,
-                    "paused": not self._running.is_set() and self.phase == SCANNING}
+                    "paused": not self._running.is_set() and self.phase == SCANNING,
+                    "llm_problem": metadata.llm_problem if self.anthropic_key else None}
 
 
 def _same_work(p: dict, q: dict, t: str, y: Optional[str]) -> bool:
@@ -564,10 +650,40 @@ def _same_work(p: dict, q: dict, t: str, y: Optional[str]) -> bool:
     return words >= 4
 
 
+_TEXT_FIELDS = ("title", "year", "journal", "volume", "issue", "pages", "publisher",
+                "doi", "isbn", "abstract", "summary", "language")
+
+
+def _as_text(value) -> Optional[str]:
+    """A field value as text, or None. Lookups (the AI especially) sometimes
+    return a number, a one-item list, or something unusable."""
+    if isinstance(value, list) and len(value) == 1:
+        value = value[0]
+    if isinstance(value, bool) or value is None or isinstance(value, (dict, list)):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _as_names(value) -> list[str]:
+    """Authors as a list of names; a single string is split on semicolons."""
+    if isinstance(value, str):
+        value = value.split(";")
+    if not isinstance(value, list):
+        return []
+    return [n for n in (_as_text(v) for v in value if not isinstance(v, list)) if n]
+
+
 def _tidy(p: dict) -> None:
-    """Clean the title, whichever lookup produced it (HTML tags such as <br>
-    turn up in titles). An "article" with no authors, no year, and no DOI is
-    usually a journal homepage or issue page; save it as a web page."""
+    """Make every field the expected type, and clean the title, journal, and
+    names whichever lookup produced them (HTML tags such as <br> and entities
+    such as &amp; turn up). An "article" with no authors, no year, and no DOI
+    is usually a journal homepage or issue page; save it as a web page."""
+    for field in _TEXT_FIELDS:
+        if field in p:
+            p[field] = _as_text(p[field])
+    if "authors" in p:
+        p["authors"] = _as_names(p["authors"])
     for field in ("title", "journal", "publisher"):    # also "&amp;" and the like
         if p.get(field):
             p[field] = metadata.clean_title(p[field])
@@ -627,7 +743,24 @@ def start_job(papers: list[dict], anthropic_key: Optional[str],
     with _current_lock:
         if _current is not None and _current.snapshot()["phase"] in (SCANNING, UPLOADING):
             return False
+        # A copy as found in the export, for Try again after a failed start.
+        original = copy.deepcopy(papers)
         _current = Job(papers, anthropic_key, audit_log_path, **kwargs)
+        _current.restart = lambda: Job(copy.deepcopy(original), anthropic_key,
+                                       audit_log_path, **kwargs)
+        _current.start()
+        return True
+
+
+def retry_job() -> bool:
+    """Start a search that failed (e.g. Zotero was unreachable) again, with
+    the same export."""
+    global _current
+    with _current_lock:
+        if _current is None or _current.snapshot()["phase"] != FAILED \
+                or not getattr(_current, "restart", None):
+            return False
+        _current = _current.restart()
         _current.start()
         return True
 
@@ -641,7 +774,7 @@ SAVED_MARK = "slack_to_zotero_saved_results"
 _NOT_SAVED = ("bucket", "reason", "include", "decision", "was_edited", "zotero_key",
               "upload_error", "existing_key", "existing_how", "existing_url",
               "existing_title", "local_pdf_path", "pdf_size_bytes", "not_scanned",
-              "scan_error")
+              "scan_error", "marked_at")
 
 
 def saved_results(papers: list[dict], label: str) -> bytes:
@@ -658,7 +791,11 @@ def read_saved_results(data: bytes) -> Optional[tuple[list[dict], str]]:
         return None
     if not isinstance(saved, dict) or SAVED_MARK not in saved:
         return None
-    return saved["papers"], saved.get("label") or "Saved results"
+    papers = saved.get("papers")
+    if not isinstance(papers, list):
+        return None
+    papers = [p for p in papers if isinstance(p, dict) and isinstance(p.get("url"), str)]
+    return papers, saved.get("label") or "Saved results"
 
 
 def load_saved_job(papers: list[dict], label: str, **kwargs) -> bool:
@@ -676,6 +813,7 @@ def discard_job() -> None:
     with _current_lock:
         if _current is not None and _current.snapshot()["phase"] == SCANNING:
             _current.stop()
+            _current.delete_files()
             _current = None
 
 
@@ -684,4 +822,5 @@ def clear_job() -> None:
     global _current
     with _current_lock:
         if _current is not None and _current.snapshot()["phase"] in (SCANNED, DONE, FAILED):
+            _current.delete_files()
             _current = None

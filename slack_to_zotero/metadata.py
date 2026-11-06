@@ -291,6 +291,7 @@ CITOID_ATTEMPTS = 3
 # Room for models that think before answering (the reply itself is ~300 tokens).
 # Only tokens actually generated are billed.
 LLM_MAX_TOKENS = 4000
+LLM_TIMEOUT = 90           # seconds per request
 CITOID_RETRY_WAIT = 3.0      # seconds; multiplied by the attempt number
 
 
@@ -584,6 +585,12 @@ def clean_title(title: Optional[str]) -> Optional[str]:
     ...) and decode entities."""
     if not title:
         return title
+    if isinstance(title, list):             # a lookup returned ["Title"]
+        title = title[0] if title else None
+    if isinstance(title, (int, float)) and not isinstance(title, bool):
+        title = str(title)
+    if not isinstance(title, str):
+        return None
     import html as _html
     return " ".join(_html.unescape(re.sub(r"<[^>]+>", "", title)).split()) or None
 
@@ -617,6 +624,24 @@ _LLM_REQUIRED_KEYS = {"title", "authors", "year", "item_type"}
 _LOW_CONTEXT_CHARS = 500
 
 
+# Set when the Anthropic key is rejected or out of credit. Later items then
+# skip the AI step (every call would fail the same way), and the page says why
+# so many items are in Review. scan.Job clears it when a search starts.
+llm_problem: Optional[str] = None
+
+
+def _account_problem(e: Exception) -> Optional[str]:
+    status = getattr(e, "status_code", None)
+    text = str(e).lower()
+    if status == 401:
+        return "The Anthropic key was rejected. Check it in the app's secrets."
+    if "credit balance" in text or "billing" in text:
+        return "The Anthropic account is out of credit."
+    if status == 403:
+        return "The Anthropic key isn't allowed to use the model."
+    return None
+
+
 def fetch_llm(url: str, comments: list[Comment],
               anthropic_key: str, audit_log_path: str,
               page_text: Optional[str] = None,
@@ -627,6 +652,9 @@ def fetch_llm(url: str, comments: list[Comment],
     (the first pages of a scanned PDF, read as images). Every request and
     response is appended to audit_log_path.
     """
+    global llm_problem
+    if llm_problem:
+        return None
     try:
         import anthropic as anthropic_sdk
     except ImportError:
@@ -733,7 +761,9 @@ def fetch_llm(url: str, comments: list[Comment],
     }
 
     try:
-        client = anthropic_sdk.Anthropic(api_key=anthropic_key)
+        # A reply takes seconds; the SDK's default wait is ten minutes, which
+        # would hold up a search worker on a stalled connection.
+        client = anthropic_sdk.Anthropic(api_key=anthropic_key, timeout=LLM_TIMEOUT)
         messages = [{"role": "user", "content": content}]
         try:
             resp = client.messages.create(model=model, max_tokens=LLM_MAX_TOKENS,
@@ -783,6 +813,7 @@ def fetch_llm(url: str, comments: list[Comment],
                               f"and auto-fallback found no replacement: {e}")
         else:
             audit["error"] = f"{type(e).__name__}: {e}"
+            llm_problem = llm_problem or _account_problem(e)
         return None
     finally:
         try:
@@ -803,7 +834,7 @@ def _auto_heal_model(anthropic_key: str, current_model: str) -> Optional[str]:
     model id, or None if none could be found."""
     try:
         import anthropic as anthropic_sdk
-        models = anthropic_sdk.Anthropic(api_key=anthropic_key).models.list(
+        models = anthropic_sdk.Anthropic(api_key=anthropic_key, timeout=LLM_TIMEOUT).models.list(
             limit=1000).data
     except Exception:
         return None
