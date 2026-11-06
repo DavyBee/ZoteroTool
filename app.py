@@ -179,7 +179,8 @@ def start_over_control() -> None:
             st.session_state.confirm_start_over = True
             st.rerun()
         return
-    st.caption("This clears the search results from the page. Items already uploaded stay in Zotero.")
+    st.caption("This clears the search results for everyone using the app. "
+               "Items already uploaded stay in Zotero.")
     c1, c2, _ = st.columns([1, 1, 6])
     if c1.button("Clear results", type="primary", key="start_over_confirm"):
         clear_job()
