@@ -91,8 +91,8 @@ def test_finished_scan_keeps_every_step_on_the_page():
     assert "Done · export.zip" in text
     assert "1 ready · 1 review · 0 already in Zotero" in text
     labels = [e.label for e in at.expander]
-    assert ["Ready (1)", "Left to review (1)", "Marked for upload (0)", "Removed (0)"] == labels[:4]
-    assert "Upload 1 to Zotero" in _buttons(at)
+    assert ["Ready (1)", "Left to review (1)", "Removed (0)"] == labels[:3]
+    assert "Upload 1 ready item to Zotero" in _buttons(at)
 
 
 def test_start_over_asks_before_clearing():
@@ -121,12 +121,12 @@ def test_results_stay_after_upload_and_more_can_be_uploaded():
     assert "**Ready" not in text                     # uploaded items leave Ready
     assert "Left to review (1)" in [e.label for e in at.expander]   # Review stays
     assert "New search" in _buttons(at)
-    assert "Upload 1 to Zotero" not in _buttons(at)   # nothing left selected
+    assert "Upload 1 ready item to Zotero" not in _buttons(at)   # nothing left selected
 
     job.set_include("https://a.org/junk", True)       # pick something from Review
     at = _page()
     assert "1 more selected." in _text(at)
-    assert "Upload 1 to Zotero" in _buttons(at)
+    assert "Upload 1 ready item to Zotero" in _buttons(at)
 
 
 def test_no_emoji_in_page_text():
@@ -185,9 +185,9 @@ def test_review_card_correct_adds_the_item_to_the_upload():
     assert "1 of 1" in _text(at)
     _buttons(at)["Mark ready for upload"].click().run()
     assert _junk(job)["decision"] == "correct" and _junk(job)["include"]
-    assert "Upload 2 to Zotero" in _buttons(at)
+    assert "Upload 2 ready items to Zotero" in _buttons(at)
     assert "All items reviewed." in _text(at)
-    assert "Marked for upload (1)" in [e.label for e in at.expander]
+    assert "Ready (2)" in [e.label for e in at.expander]       # joins Ready
 
 
 def test_review_card_remove_leaves_the_item_out_and_can_be_undone():
@@ -196,7 +196,7 @@ def test_review_card_remove_leaves_the_item_out_and_can_be_undone():
     assert "Not a source" not in _buttons(at)
     _buttons(at)["Remove"].click().run()
     assert _junk(job)["decision"] == "removed" and not _junk(job)["include"]
-    assert "Upload 1 to Zotero" in _buttons(at)
+    assert "Upload 1 ready item to Zotero" in _buttons(at)
     assert "All items reviewed." in _text(at)
     assert "Removed (1)" in [e.label for e in at.expander]
     assert _buttons(at)["Undo"].disabled             # until a row is ticked
@@ -218,7 +218,7 @@ def test_review_card_edit_saves_the_fields_and_uploads():
     assert "decision" not in p and "Mark ready for upload" in _buttons(at)   # back to the card
     _buttons(at)["Mark ready for upload"].click().run()
     assert p["decision"] == "edited"
-    assert p["include"] and "Upload 2 to Zotero" in _buttons(at)
+    assert p["include"] and "Upload 2 ready items to Zotero" in _buttons(at)
 
 
 def test_review_table_view_is_still_available():
@@ -234,7 +234,7 @@ def test_review_table_view_is_still_available():
 def test_upload_asks_first_when_items_are_left_out():
     job = _scanned_job()                    # 1 ready, 1 review item not marked
     at = _page()
-    _buttons(at)["Upload 1 to Zotero"].click().run()
+    _buttons(at)["Upload 1 ready item to Zotero"].click().run()
     text = " ".join(m.value for m in at.markdown)
     assert "Upload 1 item to Zotero?" in text
     assert "1 in Review isn't marked ready for upload." in text
@@ -249,7 +249,7 @@ def test_upload_goes_straight_through_when_nothing_is_left_out(monkeypatch):
     started = []
     monkeypatch.setattr(job, "start_upload", lambda make: started.append(True))
     at = _page()
-    _buttons(at)["Upload 1 to Zotero"].click().run()
+    _buttons(at)["Upload 1 ready item to Zotero"].click().run()
     assert started == [True]
 
 
@@ -537,3 +537,17 @@ def test_stop_asks_in_a_dialog_then_clears_the_search():
         assert scan.current_job() is None
     finally:
         gate.set()
+
+
+def test_marked_item_shows_in_ready_and_move_to_review_sends_it_back():
+    import app as page
+    job = _scanned_job()
+    at = _page()
+    _buttons(at)["Mark ready for upload"].click().run()
+    assert "Ready (2)" in [e.label for e in at.expander]
+    page.table_action(job, "move", [_junk(job)])
+    assert not _junk(job).get("decision") and not _junk(job)["include"]
+    at.run()
+    labels = [e.label for e in at.expander]
+    assert "Ready (1)" in labels and "Left to review (1)" in labels
+    assert "Upload 1 ready item to Zotero" in _buttons(at)

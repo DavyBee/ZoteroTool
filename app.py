@@ -323,10 +323,10 @@ def _save_card(job: scan.Job, p: dict) -> None:
 
 
 def review_section(job: scan.Job, items: list[dict], locked: bool) -> None:
-    """Review in three collapsible parts: items still to decide (as cards or
-    an editable table), items marked for upload, and removed items."""
+    """Review in two collapsible parts: items still to decide (as cards or
+    an editable table) and removed items. Items marked ready for upload are
+    shown under Ready."""
     undecided = [q for q in items if not q.get("decision")]
-    marked = [q for q in items if q.get("decision") in ("correct", "edited")]
     removed = [q for q in items if q.get("decision") == "removed"]
 
     with st.expander(f"Left to review ({len(undecided)})", expanded=True,
@@ -343,13 +343,12 @@ def review_section(job: scan.Job, items: list[dict], locked: bool) -> None:
                 _card(job, undecided, locked)
             else:
                 _review_table(job, undecided, locked)
-    _decided_table("Marked for upload", marked, job, locked, "exp_marked")
     _decided_table("Removed", removed, job, locked, "exp_removed")
 
 
 def _decided_table(label: str, items: list[dict], job: scan.Job, locked: bool,
                    key: str) -> None:
-    """A collapsed table of decided items; Undo sends selected rows back."""
+    """A collapsed table of removed items; Undo sends selected rows back."""
     with st.expander(f"{label} ({len(items)})", key=key):
         if not items:
             st.caption("None yet.")
@@ -381,7 +380,7 @@ def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
     """Items as an editable table: tick rows in the first column, then act on
     them with the buttons below. Title, authors, year, and journal can be
     changed in place and are kept with Save edits. `mode` is "ready",
-    "left" (to review), or "decided" (marked for upload, or removed)."""
+    "left" (to review), or "decided" (removed)."""
     rows = []
     for p in items:
         row = {"Select": False, "Link": p["url"]}
@@ -447,7 +446,10 @@ def table_action(job: scan.Job, action: str, items: list[dict]) -> None:
         if action == "undo":
             job.decide(p["url"], None)
         elif action == "move":
-            job.move_to_review(p["url"])
+            if p.get("bucket") == scan.READY:
+                job.move_to_review(p["url"])
+            else:
+                job.decide(p["url"], None)        # marked in Review: back to undecided
         elif action == "mark":
             mark_for_upload(job, [p])
         elif action == "remove":
@@ -658,8 +660,12 @@ def step_scan(job: scan.Job | None) -> None:
                           disabled=editing) or ""
     if editing:
         st.caption("Save or cancel the table edits to search.")
-    # Uploaded items leave the Ready table; step 3 reports them.
-    ready = [p for p in ready if not p.get("zotero_key")]
+    # Ready shows everything that will be uploaded: items the search found
+    # plus those marked ready in Review. Uploaded items leave it; step 3
+    # reports them.
+    marked = [p for p in review if p.get("decision") in ("correct", "edited")]
+    ready = sorted((p for p in ready + marked if not p.get("zotero_key")),
+                   key=scan._sort_title)
     shown_ready, shown_review = _matching(ready, query), _matching(review, query)
     # A different key per search, so a ticked box can't carry over to the
     # wrong row when the list changes.
@@ -738,7 +744,7 @@ def step_upload(job: scan.Job | None) -> None:
         what = "more selected" if has_uploaded else "selected"
         st.caption(f"{n_selected} {what}.")
         label = "Retry failed" if failed and n_selected == len(failed) else \
-            f"Upload {n_selected} to Zotero"
+            f"Upload {n_selected} ready {'item' if n_selected == 1 else 'items'} to Zotero"
         if st.button(label, type="primary", disabled=not zotero_ready()):
             unmarked = _left_out(job)
             if unmarked:
