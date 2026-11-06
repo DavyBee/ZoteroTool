@@ -188,19 +188,26 @@ def step_export(job: scan.Job | None) -> None:
 
 
 def start_over_control() -> None:
-    if not st.session_state.get("confirm_start_over"):
-        if st.button("Start over", key="start_over"):
-            st.session_state.confirm_start_over = True
-            st.rerun()
-        return
-    st.caption("This clears the search results for everyone using the app. "
-               "Items already uploaded stay in Zotero.")
-    c1, c2, _ = st.columns([1, 1, 6])
-    if c1.button("Clear results", type="primary", key="start_over_confirm"):
+    # The dialog opens at the end of main(), so it can't clash with the
+    # upload confirmation opened further down the page.
+    if st.button("Start over", key="start_over"):
+        st.session_state.confirm_start_over = True
+
+
+def _close_start_over() -> None:
+    st.session_state.pop("confirm_start_over", None)
+
+
+@st.dialog("Start over", on_dismiss=_close_start_over)
+def confirm_start_over() -> None:
+    st.write("This clears the search results for everyone using the app. "
+             "Items already uploaded stay in Zotero.")
+    row = st.container(horizontal=True)
+    if row.button("Clear results", key="start_over_confirm"):
         clear_job()
         st.rerun()
-    if c2.button("Cancel", type="tertiary", key="start_over_cancel"):
-        st.session_state.pop("confirm_start_over", None)
+    if row.button("Cancel", key="start_over_cancel"):
+        _close_start_over()
         st.rerun()
 
 
@@ -212,7 +219,7 @@ def progress(job: scan.Job, phase: str) -> None:
     if snap["phase"] != phase:
         st.session_state.pop("confirm_stop", None)   # no stale prompt for the next search
         st.rerun()                       # finished: redraw the whole page
-    step = "Paused" if snap["paused"] else snap["step"]
+    step = ("Pausing" if snap["pausing"] else "Paused") if snap["paused"] else snap["step"]
     if snap["step"] in ("Searching", "Uploading"):
         total = max(snap["total"], 1)
         st.progress(min(snap["done"] / total, 1.0),
@@ -757,6 +764,7 @@ def step_upload(job: scan.Job | None) -> None:
             f"Upload {n_selected} ready {'item' if n_selected == 1 else 'items'} to Zotero"
         if st.button(label, type="primary", disabled=not zotero_ready()):
             unmarked = _left_out(job)
+            st.session_state.pop("confirm_start_over", None)   # one dialog at a time
             if unmarked:
                 confirm_upload(job, n_selected, unmarked)
             else:
@@ -862,6 +870,9 @@ def main() -> None:
     step_upload(job)
     st.divider()
     render_settings()
+    if st.session_state.get("confirm_start_over") and job is not None \
+            and job.snapshot()["phase"] in (scan.SCANNED, scan.DONE, scan.FAILED):
+        confirm_start_over()
 
 
 main()

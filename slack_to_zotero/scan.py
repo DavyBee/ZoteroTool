@@ -257,6 +257,7 @@ class Job:
         self.stop_requested = False
         self._running = threading.Event()        # cleared while paused
         self._running.set()
+        self._busy = 0                           # items being looked up right now
         self._paused_at: Optional[float] = None
         self._paused_for = 0.0
         self.started_at = time.time()
@@ -309,6 +310,15 @@ class Job:
         self._running.wait()
         if self.stop_requested:
             return {"metadata_source": "none", "not_scanned": True}
+        with self.lock:
+            self._busy += 1
+        try:
+            return self._lookup(paper)
+        finally:
+            with self.lock:
+                self._busy -= 1
+
+    def _lookup(self, paper: dict) -> dict:
         try:
             fields = self._enrich(paper, self.anthropic_key, self.audit_log_path)
             trial = {**paper, **fields}
@@ -616,6 +626,9 @@ class Job:
                     "skipped_existing": self.skipped_existing,
                     "stopping": self.stop_requested and self.phase == SCANNING,
                     "paused": not self._running.is_set() and self.phase == SCANNING,
+                    # Paused, but items already being looked up still finish.
+                    "pausing": not self._running.is_set() and self.phase == SCANNING
+                               and self._busy > 0,
                     "llm_problem": metadata.llm_problem if self.anthropic_key else None}
 
 

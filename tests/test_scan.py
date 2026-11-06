@@ -816,3 +816,23 @@ def test_a_full_zotero_library_gets_a_plain_message(monkeypatch):
     monkeypatch.setattr(zotero_client, "urlopen", full)
     with pytest.raises(RuntimeError, match="out of storage"):
         zotero_client._http("POST", "https://api.zotero.org/x", b"", {})
+
+
+def test_pause_says_pausing_until_the_items_in_progress_finish():
+    import threading
+    gate = threading.Event()
+
+    def enrich(p, *a):
+        gate.wait(5)
+        return {"metadata_source": "translator", "title": "T"}
+    job = scan.Job(_papers(1), None, title_search=lambda *a: None, enrich=enrich)
+    job.start()
+    end = time.time() + 5
+    while not job._busy:
+        assert time.time() < end
+        time.sleep(0.01)
+    job.pause()
+    snap = job.snapshot()
+    assert snap["paused"] and snap["pausing"]          # one item still being looked up
+    gate.set()
+    _wait(job, scan.SCANNED)
