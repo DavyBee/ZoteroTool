@@ -31,6 +31,24 @@ from .records import Paper
 BATCH_SIZE = 50          # Zotero API hard limit per create_items call
 
 
+def explain_error(exc: BaseException) -> str:
+    """A plain sentence for the usual Zotero failures, else the raw error."""
+    from pyzotero import zotero_errors as ze
+    try:
+        from httpx2 import TransportError
+    except ImportError:                       # pyzotero moved to another client
+        TransportError = OSError
+    if isinstance(exc, ze.UserNotAuthorisedError):
+        return "The Zotero key doesn't allow this. Check that it has write access to the library."
+    if isinstance(exc, ze.ResourceNotFoundError):
+        return "Zotero couldn't find the library or collection. Check the IDs in Settings."
+    if isinstance(exc, (ze.TooManyRequestsError, ze.TooManyRetriesError)):
+        return "Zotero is limiting requests. Wait a few minutes, then retry."
+    if isinstance(exc, (TransportError, URLError, TimeoutError, ConnectionError)):
+        return "Couldn't reach Zotero. Check the connection, then retry."
+    return f"{type(exc).__name__}: {exc}"
+
+
 def _create_items(zot, items, retries: int = 3):
     """zot.create_items, hardened against pyzotero's 429 handling bug.
 
@@ -182,7 +200,7 @@ def upload_papers(
         except Exception as exc:
             # Network or authentication failure. "Retry failed" on the page
             # sends these again.
-            msg = f"batch upload failed: {exc}"
+            msg = explain_error(exc)
             for p in batch:
                 errors.append((p["url"], msg))
                 p["upload_error"] = msg

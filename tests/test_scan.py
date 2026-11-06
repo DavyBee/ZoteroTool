@@ -570,3 +570,15 @@ def test_isbn_is_sent_only_for_types_that_have_it():
     book = paper_to_zotero_item({"url": "u", "title": "T", "item_type": "book",
                                  "isbn": "9780000000000"})
     assert "ISBN" not in article and book["ISBN"] == "9780000000000"
+
+
+def test_zotero_failures_are_explained_plainly():
+    from urllib.error import URLError
+
+    from pyzotero import zotero_errors as ze
+
+    from slack_to_zotero.zotero_client import explain_error
+    assert "write access" in explain_error(ze.UserNotAuthorisedError("403"))
+    assert "Check the IDs" in explain_error(ze.ResourceNotFoundError("404"))
+    assert "Couldn't reach Zotero" in explain_error(URLError("down"))
+    assert explain_error(ValueError("odd")) == "ValueError: odd"

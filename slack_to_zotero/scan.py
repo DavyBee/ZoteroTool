@@ -306,7 +306,8 @@ class Job:
                 index = self._load_index()
             except Exception as exc:
                 with self.lock:
-                    self.fatal_error = f"Could not read the Zotero library. {exc}"
+                    from .zotero_client import explain_error
+                    self.fatal_error = f"Could not read the Zotero library. {explain_error(exc)}"
                     self.finished_at = time.time()
                     self.phase = FAILED
                 return
