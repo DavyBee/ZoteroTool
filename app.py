@@ -98,11 +98,15 @@ _STYLE = ("<style>\n"
           '[class*="st-key-waiting-"] h3 { opacity: 0.4; }\n'
           + _button_color(_RED, "#d93025", "#b3261e")
           + _button_color(_ORANGE, "#e8710a", "#c35f08")
-          # Result sections: blue Ready, orange Review, red Removed. See-through
+          # Result sections: blue Ready, orange Review, red Removed, with a solid
+          # edge on the left. See-through
           # tints, so the header text stays readable in light and dark themes.
-          + ".st-key-exp_ready summary { background-color: rgba(66, 133, 244, 0.18); }\n"
-          + ".st-key-exp_left summary { background-color: rgba(232, 113, 10, 0.18); }\n"
-          + ".st-key-exp_removed summary { background-color: rgba(217, 48, 37, 0.18); }\n"
+          + ".st-key-exp_ready summary { background-color: rgba(66, 133, 244, 0.28); "
+             "box-shadow: inset 4px 0 rgb(66, 133, 244); }\n"
+          + ".st-key-exp_left summary { background-color: rgba(232, 113, 10, 0.28); "
+             "box-shadow: inset 4px 0 rgb(232, 113, 10); }\n"
+          + ".st-key-exp_removed summary { background-color: rgba(217, 48, 37, 0.28); "
+             "box-shadow: inset 4px 0 rgb(217, 48, 37); }\n"
           + "</style>")
 
 
