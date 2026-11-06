@@ -1,5 +1,0 @@
-# For running the tests (locally and on GitHub). The app itself only needs
-# requirements.txt.
--r requirements.txt
-pyflakes==4.1.0
-pytest==9.2.0

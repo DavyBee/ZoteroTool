@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import datetime
 import pathlib
+import re
+import tomllib
 
 import pytest
 
@@ -65,7 +67,8 @@ def test_citoid():
 # Python, which may break them. This fails six months ahead as a reminder.
 
 def test_python_version_is_not_near_end_of_life():
-    version = (pathlib.Path(__file__).parent.parent / ".python-version").read_text().strip()
+    project = tomllib.loads((pathlib.Path(__file__).parent.parent / "pyproject.toml").read_text())
+    version = re.search(r"3\.\d+", project["project"]["requires-python"])[0]
     minor = int(version.split(".")[1])
     end_of_life = datetime.date(2016 + minor, 10, 1)
     warn_from = end_of_life - datetime.timedelta(days=183)
@@ -73,4 +76,4 @@ def test_python_version_is_not_near_end_of_life():
         f"Python {version} stops getting security fixes around {end_of_life:%B %Y}. "
         "Redeploy the app on the newest Python Streamlit Cloud offers (delete the app "
         "and deploy it again, choosing the version under Advanced settings), then "
-        "update .python-version and the --python-version in requirements.in.")
+        "update requires-python and the --python-version in pyproject.toml.")
