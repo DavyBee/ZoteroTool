@@ -501,3 +501,27 @@ def test_items_cannot_change_while_uploading():
     assert (a["title"], a["bucket"], a["include"]) == ("https://a.org/0", scan.READY, True)
     release.set()
     _wait(job, scan.DONE)
+
+
+def test_an_upload_that_fails_before_sending_still_finishes(monkeypatch):
+    job = scan.Job(_papers(2), None, title_search=lambda *a: None,
+                   enrich=lambda p, *a: {"metadata_source": "translator", "title": p["url"]})
+    job.start()
+    _wait(job, scan.SCANNED)
+
+    def broken(papers):
+        raise RuntimeError("index unreadable")
+    monkeypatch.setattr(job, "_recheck", broken)
+    job.start_upload(lambda: FakeZotero())
+    _wait(job, scan.DONE)
+    result = job.snapshot()["upload_result"]
+    assert result["failed"] == 2 and "index unreadable" in result["errors"][0][1]
+
+
+def test_a_search_that_fails_while_finishing_still_ends(monkeypatch):
+    job = scan.Job(_papers(2), None, title_search=lambda *a: None,
+                   enrich=lambda p, *a: {"metadata_source": "translator", "title": p["url"]})
+    monkeypatch.setattr(job, "_merge_duplicates", lambda: 1 / 0)
+    job.start()
+    _wait(job, scan.SCANNED)
+    assert "ZeroDivisionError" in job.snapshot()["fatal_error"]

@@ -314,18 +314,18 @@ class Job:
                 self.index = index
                 self.step = "Searching"
 
-        to_scan = []
-        with self.lock:
-            for p in self.papers:
-                hit = self.index.match_identifiers(p) if self.index else None
-                if hit:
-                    self._mark_existing(p, hit)
-                    self.done += 1
-                    self.log.append(f"{_label(p)}  {p['url']}")
-                else:
-                    to_scan.append(p)
-
         try:
+            to_scan = []
+            with self.lock:
+                for p in self.papers:
+                    hit = self.index.match_identifiers(p) if self.index else None
+                    if hit:
+                        self._mark_existing(p, hit)
+                        self.done += 1
+                        self.log.append(f"{_label(p)}  {p['url']}")
+                    else:
+                        to_scan.append(p)
+
             with ThreadPoolExecutor(max_workers=WORKERS) as pool:
                 futures = {pool.submit(self._enrich_one, p): p for p in to_scan}
                 for fut in as_completed(futures):
@@ -351,8 +351,11 @@ class Job:
                     p.update(not_scanned=True, metadata_source="none")
                     p["bucket"], p["reason"] = classify(p)
                     p["include"] = False
-            self._merge_duplicates()
-            self._label_working_papers()
+            try:
+                self._merge_duplicates()
+                self._label_working_papers()
+            except Exception:
+                self.fatal_error = traceback.format_exc()
             self.finished_at = time.time()
             self.phase = SCANNED
 
@@ -554,8 +557,8 @@ class Job:
         def log(line: str) -> None:
             with self.lock:
                 self.log.append(line)
-        papers = self._recheck(papers)
         try:
+            papers = self._recheck(papers)
             result = upload(papers, make_client(), progress_cb=progress, log_cb=log) if papers \
                 else {"uploaded": 0, "failed": 0, "errors": []}
         except Exception as exc:
