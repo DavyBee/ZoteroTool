@@ -635,3 +635,15 @@ def test_stop_ends_a_search_waiting_for_connection(monkeypatch):
     time.sleep(0.2)
     job.stop()
     _wait(job, scan.SCANNED)
+
+
+def test_search_time_leaves_out_time_paused():
+    job = scan.Job(_papers(1), None, title_search=lambda *a: None,
+                   enrich=lambda p, *a: {"metadata_source": "translator", "title": "T"})
+    job.pause()
+    job.start()
+    time.sleep(0.3)
+    job.resume()
+    job.resume()                                   # a second click changes nothing
+    _wait(job, scan.SCANNED)
+    assert job.search_seconds() < 0.2

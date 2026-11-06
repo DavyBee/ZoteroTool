@@ -266,6 +266,8 @@ class Job:
         self.stop_requested = False
         self._running = threading.Event()        # cleared while paused
         self._running.set()
+        self._paused_at: Optional[float] = None
+        self._paused_for = 0.0
         self.started_at = time.time()
         self.upload_result: Optional[dict] = None
         self.fatal_error: Optional[str] = None
@@ -285,11 +287,24 @@ class Job:
 
     def pause(self) -> None:
         """Hold the search after the items in progress; resume() continues it."""
-        if not self.stop_requested:
-            self._running.clear()
+        with self.lock:
+            if not self.stop_requested and self._running.is_set():
+                self._paused_at = time.time()
+                self._running.clear()
 
     def resume(self) -> None:
-        self._running.set()
+        with self.lock:
+            if not self._running.is_set():
+                self._paused_for += time.time() - (self._paused_at or time.time())
+                self._paused_at = None
+            self._running.set()
+
+    def search_seconds(self) -> float:
+        """How long the search took, not counting time paused."""
+        with self.lock:
+            end = self.finished_at or time.time()
+            paused = self._paused_for + (end - self._paused_at if self._paused_at else 0)
+            return max(end - self.started_at - paused, 0)
 
     def _mark_existing(self, paper: dict, hit: tuple[str, str]) -> None:
         paper["existing_key"], paper["existing_how"] = hit

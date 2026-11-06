@@ -12,7 +12,6 @@ from __future__ import annotations
 import re
 import sys
 import tempfile
-import time
 import unicodedata
 import zlib
 
@@ -317,7 +316,8 @@ def review_section(job: scan.Job, items: list[dict], locked: bool) -> None:
             st.caption("Could not be identified, or probably not a source. "
                        "Only items marked ready for upload are uploaded.")
             view = st.radio("Review view", ["Cards", "Table"], horizontal=True,
-                            label_visibility="collapsed", key="review_view")
+                            label_visibility="collapsed", key="review_view",
+                            disabled=_tables_have_unsaved_edits())
             if view == "Cards":
                 _card(job, undecided, locked)
             else:
@@ -614,7 +614,7 @@ def step_scan(job: scan.Job | None) -> None:
     ready, review = job.items(scan.READY), job.items(scan.REVIEW)
     existing = job.items(scan.EXISTING)
     step_header(2, "Results of search", DONE_STATE)
-    took = _minutes((job.finished_at or time.time()) - job.started_at)
+    took = _minutes(job.search_seconds())
     summary([f"Searched {job.n_sources} in {took}", f"{len(ready)} ready",
              f"{len(review)} review", f"{len(existing)} already in Zotero"], done=True)
     if snap["fatal_error"]:
