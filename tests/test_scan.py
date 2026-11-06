@@ -582,3 +582,22 @@ def test_zotero_failures_are_explained_plainly():
     assert "Check the IDs" in explain_error(ze.ResourceNotFoundError("404"))
     assert "Couldn't reach Zotero" in explain_error(URLError("down"))
     assert explain_error(ValueError("odd")) == "ValueError: odd"
+
+
+def test_clearing_results_deletes_their_downloaded_files(monkeypatch, tmp_path):
+    from slack_to_zotero import config
+    monkeypatch.setattr(config, "PDFS_DIR", tmp_path)
+    kept = tmp_path.parent / "not-ours.pdf"
+    kept.write_bytes(b"x")
+    pdf = tmp_path / "abc.pdf"
+    pdf.write_bytes(b"%PDF")
+
+    def enrich(p, *a):
+        return {"metadata_source": "translator", "title": p["url"],
+                "local_pdf_path": str(pdf if p["url"].endswith("0") else kept)}
+    scan._current = None
+    assert scan.start_job(_papers(2), None, enrich=enrich, title_search=lambda *a: None)
+    _wait(scan.current_job(), scan.SCANNED)
+    scan.clear_job()
+    assert not pdf.exists() and kept.exists()       # only files in the app's folder
+    kept.unlink()

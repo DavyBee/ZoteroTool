@@ -18,6 +18,7 @@ import threading
 import time
 import traceback
 import zipfile
+from pathlib import Path
 from urllib.parse import urlsplit
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -417,6 +418,22 @@ class Job:
             else _sort_title
         return sorted(rows, key=key)
 
+    def delete_files(self) -> None:
+        """Delete the PDFs this search downloaded. Uploaded ones are already
+        attached in Zotero; the rest go with the cleared results."""
+        from . import config
+        folder = config.PDFS_DIR.resolve()
+        for p in self.papers:
+            path = p.get("local_pdf_path")
+            if not path:
+                continue
+            try:
+                target = Path(path).resolve()
+                if target.parent == folder:          # only files the app saved
+                    target.unlink(missing_ok=True)
+            except OSError:
+                pass
+
     def _changeable(self) -> bool:
         """Items can change only between a scan and an upload, not while
         either runs (a click from a page drawn earlier can still arrive)."""
@@ -746,6 +763,7 @@ def discard_job() -> None:
     with _current_lock:
         if _current is not None and _current.snapshot()["phase"] == SCANNING:
             _current.stop()
+            _current.delete_files()
             _current = None
 
 
@@ -754,4 +772,5 @@ def clear_job() -> None:
     global _current
     with _current_lock:
         if _current is not None and _current.snapshot()["phase"] in (SCANNED, DONE, FAILED):
+            _current.delete_files()
             _current = None
