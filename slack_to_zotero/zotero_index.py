@@ -18,7 +18,7 @@ import re
 from difflib import SequenceMatcher
 from typing import Optional
 
-from slack_parser import clean_url
+from .slack_parser import clean_url
 
 
 # ── Normalization ─────────────────────────────────────────────────────────────

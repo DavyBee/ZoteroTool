@@ -17,7 +17,7 @@ import time
 from collections import OrderedDict
 from typing import Optional
 
-import config
+from . import config
 
 try:
     from curl_cffi import requests as _cffi

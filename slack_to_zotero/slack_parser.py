@@ -24,7 +24,7 @@ import re
 from typing import Optional, TypedDict
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from records import Comment
+from .records import Comment
 
 
 # ── Regexes ───────────────────────────────────────────────────────────────────

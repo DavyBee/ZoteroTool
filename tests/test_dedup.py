@@ -7,9 +7,9 @@ import time
 
 import pytest
 
-import scan
-import zotero_client
-import zotero_index as zi
+from slack_to_zotero import scan
+from slack_to_zotero import zotero_client
+from slack_to_zotero import zotero_index as zi
 
 
 def item(key, **data):
@@ -336,7 +336,7 @@ def test_titles_match_tolerates_typos_not_different_titles(typed, fetched, same)
 
 
 def test_crossref_title_search_needs_author_or_a_specific_title(monkeypatch):
-    import metadata
+    from slack_to_zotero import metadata
     monkeypatch.setattr(metadata, "_http_get_json", lambda url: {"message": {"items": [
         {"DOI": "10.1234/x", "title": ["Evictions"]}]}})
     monkeypatch.setattr(metadata, "lookup_doi", lambda doi: (
@@ -379,7 +379,7 @@ def test_permanent_attachment_failure_is_not_retried(monkeypatch):
 def test_citoid_retries_rate_limits_but_not_not_found(monkeypatch):
     import io
     from urllib.error import HTTPError
-    import metadata
+    from slack_to_zotero import metadata
     monkeypatch.setattr(metadata, "CITOID_RETRY_WAIT", 0)
     monkeypatch.setattr(metadata.config, "CITOID_MIN_INTERVAL", 0)
     codes = []

@@ -9,7 +9,6 @@ shared by every session, so a refresh shows the same page.
 
 from __future__ import annotations
 
-import os
 import re
 import sys
 import tempfile
@@ -19,34 +18,27 @@ import zlib
 import streamlit as st
 
 # After a push, Streamlit Cloud re-runs this file with the new code but keeps
-# the old versions of the modules below loaded, so the two disagree until the
-# app is rebooted. Drop the loaded copies when any file has changed since they
-# were loaded; they are then imported fresh. (Like a restart, this clears the
-# current scan.)
-_LOCAL_MODULES = ("records", "config", "http_fetch", "slack_parser", "pdf_storage",
-                  "zotero_index", "metadata", "zotero_client", "scan")
-_HERE = os.path.dirname(os.path.abspath(__file__))
+# the old versions of the package's modules loaded, so the two disagree until
+# the app is rebooted. Drop the loaded copies when any file in the package has
+# changed since they were loaded; they are then imported fresh. (Like a
+# restart, this clears the current scan.)
+from slack_to_zotero import code_stamp  # noqa: E402
 
-
-def _code_stamp() -> tuple:
-    return tuple(os.path.getmtime(os.path.join(_HERE, f"{name}.py"))
-                 for name in _LOCAL_MODULES)
-
-
-if getattr(sys, "_slack_to_zotero_code", None) != _code_stamp():
+if getattr(sys, "_slack_to_zotero_code", None) != code_stamp():
     # Stop a scan still running on the old code, or its threads keep going
     # unseen in the background.
-    _old_job = getattr(sys.modules.get("scan"), "_current", None)
+    _old_job = getattr(sys.modules.get("slack_to_zotero.scan"), "_current", None)
     if _old_job is not None and hasattr(_old_job, "stop"):
         _old_job.stop()
-    for _name in _LOCAL_MODULES:
+    # The package too: it keeps references to its old modules.
+    for _name in [n for n in sys.modules if n.split(".")[0] == "slack_to_zotero"]:
         sys.modules.pop(_name, None)
-    sys._slack_to_zotero_code = _code_stamp()
+    sys._slack_to_zotero_code = code_stamp()
 
-import config  # noqa: E402
-import scan  # noqa: E402
-import zotero_client  # noqa: E402
-import zotero_index  # noqa: E402
+from slack_to_zotero import config  # noqa: E402
+from slack_to_zotero import scan  # noqa: E402
+from slack_to_zotero import zotero_client  # noqa: E402
+from slack_to_zotero import zotero_index  # noqa: E402
 
 st.set_page_config(page_title="Slack to Zotero", layout="wide")
 

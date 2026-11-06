@@ -9,7 +9,7 @@ import zipfile
 
 import pytest
 
-import scan
+from slack_to_zotero import scan
 
 
 def _msg(uid, name, ts, text, **extra):
@@ -116,7 +116,7 @@ def test_classify(fields, bucket, reason):
 
 
 def test_tweets_are_ready_and_titled_by_handle():
-    from slack_parser import tweet_title
+    from slack_to_zotero.slack_parser import tweet_title
     assert scan.classify({"url": "https://x.com/u/status/1",
                           "metadata_source": "link"}) == ("ready", "")
     assert tweet_title("https://x.com/MatthewStaiger/status/1770873531364257837").startswith(
@@ -249,8 +249,8 @@ def test_landing_page_merges_with_article_but_editions_stay_apart():
 
 # ── URL normalization and tweet detection ────────────────────────────────────
 
-from records import normalize_url
-from slack_parser import is_tweet_url
+from slack_to_zotero.records import normalize_url
+from slack_to_zotero.slack_parser import is_tweet_url
 
 
 def test_normalize_url_keeps_the_query_so_ssrn_papers_stay_distinct():
@@ -275,7 +275,7 @@ def test_is_tweet_url(url, tweet):
 
 
 def test_upload_reports_each_item_and_sends_notes_in_one_request(monkeypatch, tmp_path):
-    import zotero_client
+    from slack_to_zotero import zotero_client
     pdf = tmp_path / "a.pdf"
     pdf.write_bytes(b"%PDF-1.4 test")
     attached = []

@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent      # the repository
 
 # ── Local files ───────────────────────────────────────────────────────────────
 # Nothing here is permanent: Zotero is the record. On Streamlit Cloud these

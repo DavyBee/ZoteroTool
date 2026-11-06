@@ -46,3 +46,10 @@ A monthly GitHub check confirms the outside services the app relies on still res
 Python 3.14 stops receiving security updates in October 2030, and Streamlit then moves apps to a newer version. Before then, delete the app and deploy it again on the newest Python version offered, and update `.python-version` and the version in `requirements.in`. The monthly check starts failing six months ahead as a reminder.
 
 If the default Claude model is retired, the app switches to the newest Haiku model on its own.
+
+## Files
+
+- `app.py`: the page.
+- `slack_to_zotero/`: reading the Slack export, looking up each source, checking Zotero for duplicates, and uploading.
+- `tests/`: run on every push and before each Dependabot merge.
+- `tools/save_search.py`: saves a finished search to a file, which can be uploaded in step 1 to show those results again without searching. For testing changes to the page.

@@ -23,9 +23,9 @@ from typing import Callable, Optional
 
 from pyzotero import zotero
 
-import config
-import pdf_storage
-from records import Paper
+from . import config
+from . import pdf_storage
+from .records import Paper
 
 
 BATCH_SIZE = 50          # Zotero API hard limit per create_items call

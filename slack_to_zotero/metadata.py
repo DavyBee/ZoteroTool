@@ -25,10 +25,10 @@ from urllib.parse import parse_qsl, quote as url_quote, urlsplit
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
-import config
-import http_fetch
-from records import Comment
-from pdf_storage import save_pdf, save_slack_file
+from . import config
+from . import http_fetch
+from .records import Comment
+from .pdf_storage import save_pdf, save_slack_file
 
 
 # ── HTTP helpers ──────────────────────────────────────────────────────────────
@@ -240,7 +240,7 @@ def fetch_citation_metadata(url: str) -> Optional[tuple[str, dict]]:
     """Metadata from the page's citation tags. A DOI found there goes to
     CrossRef, and is trusted only if CrossRef's title matches the page's.
     Returns (metadata_source, fields) or None."""
-    from zotero_index import titles_match
+    from .zotero_index import titles_match
     raw, content_type, _status = http_fetch.fetch(url, max_bytes=2_000_000)
     if raw is None or "html" not in (content_type or "").lower():
         return None
@@ -516,7 +516,7 @@ def search_crossref_title(title: str, author: Optional[str] = None) -> Optional[
     when its title matches, and either the typed author is among its authors
     or, with no author typed, the title is specific (four or more words).
     Returns lookup_doi's (source, fields) or None."""
-    from zotero_index import title_key, titles_match, _typo
+    from .zotero_index import title_key, titles_match, _typo
     words = (title_key(title) or "").split()
     if not author and len(words) < 4:
         return None
@@ -924,7 +924,7 @@ def enrich_paper(paper: dict, anthropic_key: Optional[str] = None,
     }
 
     # A tweet is saved as a plain link; it has no bibliographic metadata.
-    from slack_parser import is_tweet_url, tweet_date, tweet_title
+    from .slack_parser import is_tweet_url, tweet_date, tweet_title
     if is_tweet_url(url):
         fields["metadata_source"] = "link"
         fields["item_type"] = "webpage"
