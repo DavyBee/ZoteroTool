@@ -180,6 +180,10 @@ class FakeZotero:
             parent = item.get("parentItem")
             if item.get("title") in self.reject:
                 resp["failed"][str(i)] = {"message": "bad item"}
+            elif item.get("key") and "version" not in item:   # like Zotero
+                resp["failed"][str(i)] = {"message": "Either If-Unmodified-Since-Version or "
+                                          "'version' property must be provided for "
+                                          "'key'-based writes"}
             elif parent and parent not in made:         # like Zotero: parent first
                 resp["failed"][str(i)] = {"message": f"Parent item {parent} not found"}
             else:

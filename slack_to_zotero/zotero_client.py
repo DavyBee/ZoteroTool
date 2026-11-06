@@ -234,7 +234,9 @@ def upload_papers(
         objects, owners = [], []
         for p in batch:
             p["_key"] = new_item_key()
-            objects.append({**paper_to_zotero_item(p), "key": p["_key"]})
+            # Zotero needs version 0 with a key the client made: it marks
+            # the item as new rather than an edit of an existing one.
+            objects.append({**paper_to_zotero_item(p), "key": p["_key"], "version": 0})
             owners.append((p, "item"))
             if p.get("comments"):
                 objects.append({"itemType": "note", "parentItem": p["_key"],
