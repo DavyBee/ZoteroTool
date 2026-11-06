@@ -60,6 +60,7 @@ def _refresh_index(index: zotero_index.LibraryIndex) -> None:
 
 
 def start_job(papers: list[dict], source: dict) -> bool:
+    st.session_state.pop("confirm_stop", None)
     return scan.start_job(papers, config.anthropic_api_key(), str(config.LLM_AUDIT_PATH),
                           load_index=_load_index, refresh_index=_refresh_index,
                           source=source)
@@ -194,6 +195,7 @@ def start_over_control() -> None:
 def progress(job: scan.Job, phase: str) -> None:
     snap = job.snapshot()
     if snap["phase"] != phase:
+        st.session_state.pop("confirm_stop", None)   # no stale prompt for the next search
         st.rerun()                       # finished: redraw the whole page
     step = "Paused" if snap["paused"] else snap["step"]
     if snap["step"] in ("Searching", "Uploading"):
@@ -454,10 +456,12 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
     i = urls.index(current) if current in urls else 0
     p = items[i]
 
+    # Moving away mid-edit would drop the edits, so finish or cancel first.
+    editing_here = st.session_state.get("editing_url") == p["url"]
     nav = st.container(horizontal=True, vertical_alignment="center")
-    nav.button("Previous", disabled=i == 0, key="card_prev",
+    nav.button("Previous", disabled=i == 0 or editing_here, key="card_prev",
                on_click=_go_to, args=(urls[max(i - 1, 0)],))
-    nav.button("Next", disabled=i == len(items) - 1, key="card_next",
+    nav.button("Next", disabled=i == len(items) - 1 or editing_here, key="card_next",
                on_click=_go_to, args=(urls[min(i + 1, len(urls) - 1)],))
     nav.caption(f"{i + 1} of {len(items)}")
 

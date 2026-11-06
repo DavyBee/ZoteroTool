@@ -317,3 +317,15 @@ def test_search_ignores_accents_and_finds_file_names():
              {"url": "https://files.slack.com/2", "slack_file_name": "Ahmad Livshits 2024.pdf"}]
     assert [p["url"] for p in page._matching(items, "colmsjo")] == ["https://a.org/1"]
     assert [p["url"] for p in page._matching(items, "LIVSHITS")] == ["https://files.slack.com/2"]
+
+
+def test_card_navigation_waits_while_editing():
+    job = _scanned_job()
+    job.papers.append({"url": "https://a.org/junk2", "comments": [], "bucket": scan.REVIEW,
+                       "reason": "No metadata found", "include": False})
+    at = _page()
+    assert not _buttons(at)["Next"].disabled
+    _buttons(at)["Edit"].click().run()
+    assert _buttons(at)["Next"].disabled
+    _buttons(at)["Cancel"].click().run()
+    assert not _buttons(at)["Next"].disabled
