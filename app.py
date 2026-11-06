@@ -98,6 +98,10 @@ _STYLE = ("<style>\n"
           '[class*="st-key-waiting-"] h3 { opacity: 0.4; }\n'
           + _button_color(_RED, "#d93025", "#b3261e")
           + _button_color(_ORANGE, "#e8710a", "#c35f08")
+          # Result sections: light blue Ready, orange Review, red Removed.
+          + ".st-key-exp_ready summary { background-color: #e8f0fe; }\n"
+          + ".st-key-exp_left summary { background-color: #fef1e3; }\n"
+          + ".st-key-exp_removed summary { background-color: #fce8e6; }\n"
           + "</style>")
 
 
@@ -324,7 +328,7 @@ def _stop_editing() -> None:
     st.session_state.pop("editing_url", None)
     # The author boxes too, so a later edit starts from the saved names.
     for key in [k for k in st.session_state
-                if str(k).startswith(("edit_rows_", "edit_first_", "edit_last_"))]:
+                if str(k).startswith(("edit_rows_", "edit_next_", "edit_first_", "edit_last_"))]:
         del st.session_state[key]
 
 
@@ -626,6 +630,7 @@ def _author_rows(p: dict, k: int) -> None:
     if rows_key not in st.session_state:
         authors = p.get("authors") or []
         st.session_state[rows_key] = list(range(max(len(authors), 1)))
+        st.session_state[f"edit_next_{k}"] = len(st.session_state[rows_key])
         for rid, author in enumerate(authors):
             first, last = _split_name(author)
             st.session_state[f"edit_first_{k}_{rid}"] = first
@@ -640,9 +645,23 @@ def _author_rows(p: dict, k: int) -> None:
         c2.text_input("Last name *(or organisation)*", key=f"edit_last_{k}_{rid}",
                       label_visibility=shown)
         c3.button("Remove", key=f"edit_drop_{k}_{rid}",
-                  on_click=rows.remove, args=(rid,))
-    st.button("Add author", key=f"edit_add_{k}",
-              on_click=lambda: rows.append(max(rows, default=-1) + 1))
+                  on_click=_drop_author, args=(k, rid))
+    st.button("Add author", key=f"edit_add_{k}", on_click=_add_author, args=(k,))
+
+
+def _add_author(k: int) -> None:
+    """A new empty row. Row ids aren't reused, so a removed row's text
+    can't come back in a new one."""
+    rid = st.session_state[f"edit_next_{k}"]
+    st.session_state[f"edit_next_{k}"] = rid + 1
+    st.session_state[f"edit_rows_{k}"].append(rid)
+
+
+def _drop_author(k: int, rid: int) -> None:
+    rows = st.session_state[f"edit_rows_{k}"]
+    rows.remove(rid)
+    if not rows:                       # always leave one row to type in
+        _add_author(k)
 
 
 def _typed_authors(k: int) -> list[str]:

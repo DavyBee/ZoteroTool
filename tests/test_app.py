@@ -218,6 +218,8 @@ def test_review_card_edit_saves_the_fields_and_uploads():
     at.text_input(key=f"edit_last_{k}_2").input("Urban Institute").run()
     at.button(key=f"edit_drop_{k}_1").click().run()      # remove Roe
     assert at.text_input(key=f"edit_last_{k}_0").value == "Doe"   # others kept
+    at.button(key=f"edit_add_{k}").click().run()
+    assert at.text_input(key=f"edit_last_{k}_4").value == ""     # Roe doesn't come back
     at.text_input(key=f"edit_year_{k}").input("2023")
     _buttons(at)["Save edits"].click().run()
     p = _junk(job)
@@ -614,3 +616,17 @@ def test_colored_buttons_have_the_keys_the_styles_use():
     keys = {b.key for b in at.button}
     for key in ["t_ready_remove", "t_ready_move", "t_left_remove", "start_over"]:
         assert key in keys and key in page._RED + page._ORANGE
+
+
+def test_removing_the_only_author_leaves_an_empty_row():
+    job = _scanned_job()
+    _junk(job)["authors"] = ["Zucman, Gabriel"]
+    at = _page()
+    _buttons(at)["Edit"].click().run()
+    import zlib
+    k = zlib.crc32(_junk(job)["url"].encode())
+    at.button(key=f"edit_drop_{k}_0").click().run()
+    boxes = {b.key: b.value for b in at.text_input if "_first_" in b.key or "_last_" in b.key}
+    assert boxes == {f"edit_first_{k}_1": "", f"edit_last_{k}_1": ""}
+    _buttons(at)["Save edits"].click().run()
+    assert _junk(job)["authors"] == []
