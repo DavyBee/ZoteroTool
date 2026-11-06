@@ -772,7 +772,7 @@ def main() -> None:
     st.markdown(_STYLE, unsafe_allow_html=True)
     st.title("Slack to Zotero", anchor=False)
     if not zotero_ready():
-        st.warning("Zotero is not configured.")
+        st.warning("Zotero isn't set up. Add the Zotero key and library ID to the app's secrets.")
 
     job = scan.current_job()
     step_export(job)
