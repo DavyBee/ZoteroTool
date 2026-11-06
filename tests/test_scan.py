@@ -655,3 +655,46 @@ def test_attachment_names_have_no_slashes_from_authors_or_years():
                        "title": "Rent: A/B Tests?"}, "/tmp/x.pdf")
     assert "/" not in name and "\\" not in name and name.endswith(".pdf")
     assert _file_name({"title": "///"}, "/tmp/x.pdf") == "Full Text.pdf"
+
+
+class RateLimitedZotero(FakeZotero):
+    """Answers the first `limited` item writes the way pyzotero does on a 429:
+    an error from reading the empty reply as JSON."""
+    def __init__(self, limited):
+        super().__init__()
+        self.limited = limited
+        self.backoff_until = 0.0
+
+    def create_items(self, items):
+        if self.limited:
+            self.limited -= 1
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+        return super().create_items(items)
+
+
+def _ready_job(n):
+    job = scan.Job(_papers(n), None, title_search=lambda *a: None,
+                   enrich=lambda p, *a: {"metadata_source": "translator", "title": p["url"]})
+    job.start()
+    _wait(job, scan.SCANNED)
+    return job
+
+
+def test_upload_rides_out_zotero_rate_limiting(monkeypatch):
+    from slack_to_zotero import zotero_client
+    monkeypatch.setattr(zotero_client.time, "sleep", lambda s: None)
+    job = _ready_job(3)
+    zot = RateLimitedZotero(limited=2)
+    job.start_upload(lambda: zot)
+    _wait(job, scan.DONE)
+    assert job.snapshot()["upload_result"]["uploaded"] == 3 and len(zot.created) == 3
+
+
+def test_upload_reports_persistent_rate_limiting_plainly(monkeypatch):
+    from slack_to_zotero import zotero_client
+    monkeypatch.setattr(zotero_client.time, "sleep", lambda s: None)
+    job = _ready_job(2)
+    job.start_upload(lambda: RateLimitedZotero(limited=99))
+    _wait(job, scan.DONE)
+    p = job.papers[0]
+    assert "limiting requests" in p["upload_error"] and p["include"]   # ready to Retry

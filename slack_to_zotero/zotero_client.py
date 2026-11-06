@@ -42,7 +42,9 @@ def explain_error(exc: BaseException) -> str:
         return "The Zotero key doesn't allow this. Check that it has write access to the library."
     if isinstance(exc, ze.ResourceNotFoundError):
         return "Zotero couldn't find the library or collection. Check the IDs in Settings."
-    if isinstance(exc, (ze.TooManyRequestsError, ze.TooManyRetriesError)):
+    # pyzotero reads Zotero's empty 429 reply as JSON (see _create_items).
+    rate_limited_reply = isinstance(exc, ValueError) and "Expecting value" in str(exc)
+    if rate_limited_reply or isinstance(exc, (ze.TooManyRequestsError, ze.TooManyRetriesError)):
         return "Zotero is limiting requests. Wait a few minutes, then retry."
     if isinstance(exc, (TransportError, URLError, TimeoutError, ConnectionError)):
         return "Couldn't reach Zotero. Check the connection, then retry."
