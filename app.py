@@ -576,8 +576,9 @@ def _edit_fields(p: dict) -> dict:
     k = zlib.crc32(p["url"].encode())      # one set of inputs per item
     title = st.text_input("Title", value=p.get("title") or p.get("slack_file_name") or "",
                           key=f"edit_title_{k}")
-    authors = st.text_input("Authors", value="; ".join(p.get("authors") or []),
-                            help="Last, First; Last, First", key=f"edit_authors_{k}")
+    authors = st.text_input("Authors *(Last, First; separate authors with semicolons)*",
+                            value="; ".join(p.get("authors") or []),
+                            key=f"edit_authors_{k}")
     c1, c2, c3 = st.columns([1, 2, 3])
     year = c1.text_input("Year", value=p.get("year") or "", key=f"edit_year_{k}")
     kind = p.get("item_type") if p.get("item_type") in _ITEM_TYPES else "journalArticle"
