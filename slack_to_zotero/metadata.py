@@ -584,6 +584,12 @@ def clean_title(title: Optional[str]) -> Optional[str]:
     ...) and decode entities."""
     if not title:
         return title
+    if isinstance(title, list):             # a lookup returned ["Title"]
+        title = title[0] if title else None
+    if isinstance(title, (int, float)) and not isinstance(title, bool):
+        title = str(title)
+    if not isinstance(title, str):
+        return None
     import html as _html
     return " ".join(_html.unescape(re.sub(r"<[^>]+>", "", title)).split()) or None
 

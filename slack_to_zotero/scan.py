@@ -597,10 +597,40 @@ def _same_work(p: dict, q: dict, t: str, y: Optional[str]) -> bool:
     return words >= 4
 
 
+_TEXT_FIELDS = ("title", "year", "journal", "volume", "issue", "pages", "publisher",
+                "doi", "isbn", "abstract", "summary", "language")
+
+
+def _as_text(value) -> Optional[str]:
+    """A field value as text, or None. Lookups (the AI especially) sometimes
+    return a number, a one-item list, or something unusable."""
+    if isinstance(value, list) and len(value) == 1:
+        value = value[0]
+    if isinstance(value, bool) or value is None or isinstance(value, (dict, list)):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _as_names(value) -> list[str]:
+    """Authors as a list of names; a single string is split on semicolons."""
+    if isinstance(value, str):
+        value = value.split(";")
+    if not isinstance(value, list):
+        return []
+    return [n for n in (_as_text(v) for v in value if not isinstance(v, list)) if n]
+
+
 def _tidy(p: dict) -> None:
-    """Clean the title, whichever lookup produced it (HTML tags such as <br>
-    turn up in titles). An "article" with no authors, no year, and no DOI is
-    usually a journal homepage or issue page; save it as a web page."""
+    """Make every field the expected type, and clean the title, journal, and
+    names whichever lookup produced them (HTML tags such as <br> and entities
+    such as &amp; turn up). An "article" with no authors, no year, and no DOI
+    is usually a journal homepage or issue page; save it as a web page."""
+    for field in _TEXT_FIELDS:
+        if field in p:
+            p[field] = _as_text(p[field])
+    if "authors" in p:
+        p["authors"] = _as_names(p["authors"])
     for field in ("title", "journal", "publisher"):    # also "&amp;" and the like
         if p.get(field):
             p[field] = metadata.clean_title(p[field])

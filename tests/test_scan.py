@@ -548,3 +548,16 @@ def test_upload_still_checks_known_zotero_items_when_zotero_cant_be_refreshed():
     job.start_upload(lambda: zot)
     _wait(job, scan.DONE)
     assert zot.created == [] and job.papers[0]["bucket"] == scan.EXISTING
+
+
+def test_lookup_results_with_wrong_types_are_cleaned():
+    p = {"metadata_source": "llm", "title": 42, "authors": "Doe, Jane; Roe, Rich",
+         "year": 2024, "journal": ["Demography"], "volume": 12, "issue": None,
+         "pages": {"from": 1}, "summary": 3.5, "item_type": "journalArticle"}
+    scan._tidy(p)
+    assert p["title"] == "42" and p["authors"] == ["Doe, Jane", "Roe, Rich"]
+    assert (p["year"], p["journal"], p["volume"], p["issue"], p["pages"], p["summary"]) == \
+        ("2024", "Demography", "12", None, None, "3.5")
+    q = {"authors": [None, "Doe, Jane", 5, ["x"]], "item_type": "webpage"}
+    scan._tidy(q)
+    assert q["authors"] == ["Doe, Jane", "5"]
