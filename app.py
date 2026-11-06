@@ -213,7 +213,7 @@ def progress(job: scan.Job, phase: str) -> None:
         st.session_state.pop("confirm_stop", None)   # no stale prompt for the next search
         st.rerun()                       # finished: redraw the whole page
     step = "Paused" if snap["paused"] else snap["step"]
-    if snap["step"] in ("Searching", "Uploading", "Waiting for connection"):
+    if snap["step"] in ("Searching", "Uploading"):
         total = max(snap["total"], 1)
         st.progress(min(snap["done"] / total, 1.0),
                     text=f"{step} {snap['done']} of {snap['total']}")

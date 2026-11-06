@@ -159,30 +159,3 @@ def _get_urllib(url, max_bytes, timeout):
         return None, "", 0                  # no HTTP response (DNS/conn/timeout)
     except Exception:
         return None, "", 0
-
-
-# ── Connection check ──────────────────────────────────────────────────────────
-
-_online_lock = threading.Lock()
-_online_checked: tuple[float, bool] = (0.0, True)
-
-
-def online(max_age: float = 5.0) -> bool:
-    """Whether the internet is reachable: one small request to CrossRef,
-    remembered for a few seconds so many threads don't all ask at once."""
-    global _online_checked
-    with _online_lock:
-        checked_at, result = _online_checked
-        if time.time() - checked_at < max_age:
-            return result
-        try:
-            req = Request("https://api.crossref.org/", method="HEAD",
-                          headers={"User-Agent": config.USER_AGENT})
-            with urlopen(req, timeout=5):
-                result = True
-        except HTTPError:
-            result = True                     # the server answered
-        except Exception:
-            result = False
-        _online_checked = (time.time(), result)
-        return result
