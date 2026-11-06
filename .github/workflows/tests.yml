@@ -17,8 +17,8 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version-file: .python-version
+          python-version-file: pyproject.toml
           cache: pip
-      - run: pip install -r requirements-dev.txt
+      - run: pip install -r requirements.txt --group dev
       - run: python -m pyflakes app.py slack_to_zotero tests tools
       - run: python -m pytest -q

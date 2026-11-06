@@ -1,0 +1,39 @@
+[project]
+name = "slack-to-zotero"
+version = "1.0.0"
+description = "Find the sources shared in a Slack channel and add them to a Zotero library."
+readme = "README.md"
+# Streamlit Cloud sets its Python version when the app is deployed; this is
+# for GitHub's test runs and the monthly end-of-life reminder.
+requires-python = "==3.14.*"
+# The packages the app uses directly. Streamlit Cloud installs from
+# requirements.txt, which pins these and everything they depend on to exact
+# versions, so a new release can't change the app without passing the tests
+# first. Dependabot proposes updates to requirements.txt weekly.
+#
+# After editing this list, regenerate requirements.txt (existing pins are kept):
+#   uv pip compile pyproject.toml --python-version 3.14 \
+#       --python-platform x86_64-manylinux_2_28 -o requirements.txt
+dependencies = [
+    "anthropic",     # Claude API: the AI step (metadata.fetch_llm)
+    "curl_cffi",     # browser-like page fetching (http_fetch.py)
+    "pypdf",         # PDF text extraction (metadata._extract_pdf_text)
+    "pyzotero",      # Zotero API (zotero_client.py, zotero_index.py)
+    "streamlit",     # the web page (app.py)
+    "watchdog",      # Streamlit's file watcher (also installed by Streamlit itself)
+]
+
+[dependency-groups]
+# For running the tests: pip install -r requirements.txt --group dev
+dev = [
+    "pyflakes==4.1.0",
+    "pytest==9.2.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+# Tests marked "live" contact real outside services. They run in the monthly
+# GitHub check (pytest -m live), not in the normal test run.
+markers = ["live: contacts real outside services (CrossRef, Citoid, publisher pages)"]
+addopts = '-m "not live"'
