@@ -488,12 +488,15 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
                        p.get("journal") or (scan.site_name(p["url"])
                                             if p.get("item_type") == "webpage" else None)),
             ]
-        lines += [f"**Link:** [{_md(_short_link(p['url']))}]({p['url']})",
+        # <...> around the address keeps one with brackets, like
+        # wiki/Eviction_(law), from breaking the link.
+        lines += [f"**Link:** [{_md(_short_link(p['url']))}](<{p['url']}>)",
                   _field("Link summary", p.get("summary"))]
         comments = p.get("comments") or []
         if comments:
             first = comments[0]
-            text = (first.get("text") or "").strip()
+            # One line, so a message with blank lines keeps the card compact.
+            text = " ".join((first.get("text") or "").split())
             if text:
                 quote = _md(text[:400] + ("..." if len(text) > 400 else ""))
                 body = f'{_md(first.get("author") or "")}: "{quote}"'

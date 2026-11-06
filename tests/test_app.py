@@ -329,3 +329,14 @@ def test_card_navigation_waits_while_editing():
     assert _buttons(at)["Next"].disabled
     _buttons(at)["Cancel"].click().run()
     assert not _buttons(at)["Next"].disabled
+
+
+def test_card_handles_links_with_brackets_and_multiline_messages():
+    job = _scanned_job()
+    junk = _junk(job)
+    junk["url"] = "https://en.wikipedia.org/wiki/Eviction_(law)"
+    junk["comments"] = [{"author": "Ana", "ts": "1", "text": "First line\n\nSecond line\n# not a heading",
+                         "is_reply": False}]
+    text = _text(_page())
+    assert "](<https://en.wikipedia.org/wiki/Eviction_(law)>)" in text
+    assert '"First line Second line \\# not a heading"' in text
