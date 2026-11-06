@@ -121,7 +121,7 @@ def test_results_stay_after_upload_and_more_can_be_uploaded():
     assert "Ready (0)" in [e.label for e in at.expander]   # uploaded items leave Ready
     assert "Nothing ready to upload." in text
     assert "Left to review (1)" in [e.label for e in at.expander]   # Review stays
-    assert "New search" in _buttons(at)
+    assert "New search" not in _buttons(at)
     assert "Upload 1 ready item to Zotero" not in _buttons(at)   # nothing left selected
 
     job.set_include("https://a.org/junk", True)       # pick something from Review
@@ -353,21 +353,24 @@ def test_card_handles_links_with_brackets_and_multiline_messages():
     assert '"First line Second line \\# not a heading"' in text
 
 
-def test_new_search_asks_first_when_items_would_be_lost():
-    job = _scanned_job()                    # after upload, the Review item is left
+def test_clear_results_says_what_will_be_cleared_from_where():
+    job = _scanned_job()                      # 1 ready, 1 left to review
+    at = _page()
+    at.button(key="clear_results").click().run()
+    text = " ".join(m.value for m in at.markdown)
+    assert "1 item in Ready" in text and "1 item in Left to review" in text
+    assert "0 items in Removed" in text
     job.start_upload(lambda: None, upload=lambda ps, zot, **kw: (
         [p.__setitem__("zotero_key", "K") for p in ps]
         and {"uploaded": len(ps), "failed": 0, "errors": []}))
     _wait(job, scan.DONE)
     at = _page()
-    _buttons(at)["New search"].click().run()
-    assert scan.current_job() is job                   # not cleared yet
-    assert "1 item not uploaded will be cleared" in _text(at)
-    _buttons(at)["Cancel"].click().run()
-    assert scan.current_job() is job
-    _buttons(at)["New search"].click().run()
-    at.button(key="new_search_confirm").click().run()
+    at.button(key="clear_results").click().run()
+    text = " ".join(m.value for m in at.markdown)
+    assert "0 items in Ready" in text                  # the uploaded item isn't counted
+    at.button(key="clear_results_confirm").click().run()
     assert scan.current_job() is None
+
 
 
 def test_failed_batches_are_not_listed_as_file_warnings():

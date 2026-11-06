@@ -68,7 +68,6 @@ def start_job(papers: list[dict], source: dict) -> bool:
 def clear_job() -> None:
     scan.clear_job()
     st.session_state.pop("confirm_clear_results", None)
-    st.session_state.pop("confirm_new_search", None)
 
 
 def zotero_ready() -> bool:
@@ -81,7 +80,7 @@ def zotero_ready() -> bool:
 # Stop, Clear results, Remove, and Clear results are red; Move to Review is orange. A
 # disabled button keeps Streamlit's grey.
 _RED = ["edit_drop_*", "stop", "clear_results", "stop_confirm", "card_remove", "t_ready_remove", "t_left_remove",
-        "clear_results_confirm", "new_search_confirm"]
+        "clear_results_confirm"]
 _ORANGE = ["t_ready_move"]
 
 
@@ -211,8 +210,17 @@ def _close_clear_results() -> None:
 
 @st.dialog("Clear results", on_dismiss=_close_clear_results)
 def confirm_clear_results() -> None:
-    st.write("This clears the search results for everyone using the app. "
-             "Items already uploaded stay in Zotero.")
+    job = scan.current_job()
+    if job is not None:
+        ready = ready_items(job.items(scan.READY), job.items(scan.REVIEW))
+        review = [p for p in job.items(scan.REVIEW) if not p.get("zotero_key")]
+        left = sum(1 for p in review if not p.get("decision"))
+        removed = sum(1 for p in review if p.get("decision") == "removed")
+        st.write(f"This clears, for everyone using the app:  \n"
+                 f"{_plural(len(ready), 'item')} in Ready  \n"
+                 f"{_plural(left, 'item')} in Left to review  \n"
+                 f"{_plural(removed, 'item')} in Removed")
+    st.write("Items already uploaded stay in Zotero.")
     row = st.container(horizontal=True)
     if row.button("Clear results", key="clear_results_confirm"):
         clear_job()
@@ -865,34 +873,6 @@ def step_upload(job: scan.Job | None) -> None:
                 st.rerun()
     elif not has_uploaded:
         st.caption("Nothing selected to upload.")
-
-    if has_uploaded:
-        new_search(job, primary=not n_selected)
-
-
-def new_search(job: scan.Job, primary: bool) -> None:
-    """Clear the results for a new search, asking first if any item that
-    hasn't been uploaded or removed would be lost."""
-    unsent = sum(1 for p in job.items(scan.READY) + job.items(scan.REVIEW)
-                 if not p.get("zotero_key") and p.get("decision") != "removed")
-    if not st.session_state.get("confirm_new_search"):
-        if st.button("New search", type="primary" if primary else "tertiary",
-                     key="new_search"):
-            if unsent:
-                st.session_state.confirm_new_search = True
-            else:
-                clear_job()
-            st.rerun()
-        return
-    st.caption(f"{_plural(unsent, 'item')} not uploaded will be cleared, "
-               "for everyone using the app.")
-    row = st.container(horizontal=True)
-    if row.button("Clear results", type="primary", key="new_search_confirm"):
-        clear_job()
-        st.rerun()
-    if row.button("Cancel", type="tertiary", key="new_search_cancel"):
-        st.session_state.pop("confirm_new_search", None)
-        st.rerun()
 
 
 def _left_out(job: scan.Job) -> int:
