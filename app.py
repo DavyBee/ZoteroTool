@@ -464,7 +464,7 @@ def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
     def act(label: str, action: str, primary: bool = False) -> None:
         bar.button(f"{label} ({n})" if n else label,
                    type="primary" if primary else "secondary",
-                   disabled=locked or not n, key=f"{name}_{action}",
+                   disabled=locked or not n, key=f"t_{mode}_{action}",   # one table per mode
                    on_click=table_action, args=(job, action, chosen))
 
     if mode == "decided":

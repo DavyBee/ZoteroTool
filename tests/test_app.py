@@ -604,3 +604,13 @@ def test_ready_lists_items_marked_by_a_person_first_newest_at_the_top():
     job.decide("https://a.org/3", None)             # unmarked: back to Review
     shown = page.ready_items(job.items(scan.READY), job.items(scan.REVIEW))
     assert [p["url"][-1] for p in shown] == ["2", "0", "1"]
+
+
+def test_colored_buttons_have_the_keys_the_styles_use():
+    import app as page
+    _scanned_job()
+    at = _page()
+    at.radio(key="review_view").set_value("Table").run()
+    keys = {b.key for b in at.button}
+    for key in ["t_ready_remove", "t_ready_move", "t_left_remove", "start_over"]:
+        assert key in keys and key in page._RED + page._ORANGE
