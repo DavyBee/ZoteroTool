@@ -431,22 +431,25 @@ def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
     urls = [p["url"] for p in items]
     key = f"{name}_{st.session_state.get('table_version', 0)}"
     columns = list(rows[0])
+    ready = mode == "ready"
+    # Columns keep these widths (a stretched table would give every column
+    # the same extra space), so Title and Authors get most of the room.
+    # 50 px is the narrowest Streamlit allows.
     st.data_editor(
-        rows, key=key, hide_index=True,
+        rows, key=key, hide_index=True, width="content",
         disabled=columns if locked else ["Link", "Status", "Reason", "Summary", "Added by"],
         column_config={
-            # Pinned columns keep their width; the rest stretch to fill the
-            # table. 50 px is the narrowest Streamlit allows.
             "Select": st.column_config.CheckboxColumn("", width=50, pinned=True),
             "Link": st.column_config.LinkColumn(display_text="Open", width=50, pinned=True),
-            "Status": st.column_config.TextColumn(width=90),
-            "Reason": st.column_config.TextColumn(width=170),
-            "Title": st.column_config.TextColumn(width=400 if mode != "ready" else 500),
-            "Authors": st.column_config.TextColumn(width=180, help="Last, First; Last, First"),
-            "Year": st.column_config.TextColumn(width=70),
-            "Journal": st.column_config.TextColumn(width=150),
-            "Summary": st.column_config.TextColumn(width=220),
-            "Added by": st.column_config.TextColumn(width=80),
+            "Status": st.column_config.TextColumn(width=80),
+            "Reason": st.column_config.TextColumn(width=160),
+            "Title": st.column_config.TextColumn(width=560 if ready else 420),
+            "Authors": st.column_config.TextColumn(width=320 if ready else 240,
+                                                   help="Last, First; Last, First"),
+            "Year": st.column_config.TextColumn(width=55),
+            "Journal": st.column_config.TextColumn(width=170),
+            "Summary": st.column_config.TextColumn(width=240),
+            "Added by": st.column_config.TextColumn(width=75),
         },
     )
     changes = st.session_state.get(key, {}).get("edited_rows", {})
