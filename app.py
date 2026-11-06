@@ -320,6 +320,10 @@ def _decide(job: scan.Job, items: list[dict], i: int, decision: str,
 
 def _stop_editing() -> None:
     st.session_state.pop("editing_url", None)
+    # The author boxes too, so a later edit starts from the saved names.
+    for key in [k for k in st.session_state
+                if str(k).startswith(("edit_rows_", "edit_first_", "edit_last_"))]:
+        del st.session_state[key]
 
 
 def _start_editing(url: str) -> None:
@@ -331,7 +335,7 @@ def _save_card(job: scan.Job, p: dict) -> None:
     get = lambda name: (st.session_state.get(f"edit_{name}_{k}") or "").strip()
     job.edit(p["url"], {
         "title": get("title") or None,
-        "authors": [a.strip() for a in get("authors").split(";") if a.strip()],
+        "authors": _typed_authors(k),
         "year": get("year") or None,
         "item_type": st.session_state.get(f"edit_type_{k}") or p.get("item_type"),
         "journal": get("journal") or None})
@@ -576,9 +580,7 @@ def _edit_fields(p: dict) -> dict:
     k = zlib.crc32(p["url"].encode())      # one set of inputs per item
     title = st.text_input("Title", value=p.get("title") or p.get("slack_file_name") or "",
                           key=f"edit_title_{k}")
-    authors = st.text_input("Authors *(Last, First; separate authors with semicolons)*",
-                            value="; ".join(p.get("authors") or []),
-                            key=f"edit_authors_{k}")
+    _author_rows(p, k)
     c1, c2, c3 = st.columns([1, 2, 3])
     year = c1.text_input("Year", value=p.get("year") or "", key=f"edit_year_{k}")
     kind = p.get("item_type") if p.get("item_type") in _ITEM_TYPES else "journalArticle"
@@ -587,9 +589,55 @@ def _edit_fields(p: dict) -> dict:
     journal = c3.text_input("Journal or website", value=p.get("journal") or "",
                             key=f"edit_journal_{k}")
     return {"title": title.strip() or None,
-            "authors": [a.strip() for a in authors.split(";") if a.strip()],
+            "authors": _typed_authors(k),
             "year": year.strip() or None, "item_type": item_type,
             "journal": journal.strip() or None}
+
+
+def _split_name(author: str) -> tuple[str, str]:
+    """A stored author ("Last, First", or one name) as (first, last)."""
+    last, _, first = author.partition(",")
+    return first.strip(), last.strip()
+
+
+def _author_rows(p: dict, k: int) -> None:
+    """One row per author, with first and last name in separate boxes. An
+    organisation (or any single name) goes in the last-name box."""
+    rows_key = f"edit_rows_{k}"
+    if rows_key not in st.session_state:
+        authors = p.get("authors") or []
+        st.session_state[rows_key] = list(range(max(len(authors), 1)))
+        for rid, author in enumerate(authors):
+            first, last = _split_name(author)
+            st.session_state[f"edit_first_{k}_{rid}"] = first
+            st.session_state[f"edit_last_{k}_{rid}"] = last
+    rows = st.session_state[rows_key]
+    st.markdown('<p style="font-size:14px;margin:0 0 4px">Authors</p>',
+                unsafe_allow_html=True)
+    for n, rid in enumerate(rows):
+        c1, c2, c3 = st.columns([3, 3, 1], vertical_alignment="bottom")
+        shown = "visible" if n == 0 else "collapsed"
+        c1.text_input("First name", key=f"edit_first_{k}_{rid}", label_visibility=shown)
+        c2.text_input("Last name *(or organisation)*", key=f"edit_last_{k}_{rid}",
+                      label_visibility=shown)
+        c3.button("Remove", type="tertiary", key=f"edit_drop_{k}_{rid}",
+                  on_click=rows.remove, args=(rid,))
+    st.button("Add author", type="tertiary", key=f"edit_add_{k}",
+              on_click=lambda: rows.append(max(rows, default=-1) + 1))
+
+
+def _typed_authors(k: int) -> list[str]:
+    """The author rows as stored names: "Last, First", or just the one name
+    given. Empty rows are left out."""
+    authors = []
+    for rid in st.session_state.get(f"edit_rows_{k}", []):
+        first = (st.session_state.get(f"edit_first_{k}_{rid}") or "").strip()
+        last = (st.session_state.get(f"edit_last_{k}_{rid}") or "").strip()
+        if first and last:
+            authors.append(f"{last}, {first}")
+        elif first or last:
+            authors.append(first or last)
+    return authors
 
 
 def _field(label: str, value) -> str:

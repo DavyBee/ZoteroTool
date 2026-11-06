@@ -209,12 +209,20 @@ def test_review_card_edit_saves_the_fields_and_uploads():
     import zlib
     k = zlib.crc32(_junk(job)["url"].encode())
     at.text_input(key=f"edit_title_{k}").input("The Real Title")
-    at.text_input(key=f"edit_authors_{k}").input("Doe, Jane; Roe, Rich")
+    at.text_input(key=f"edit_first_{k}_0").input("Jane")
+    at.text_input(key=f"edit_last_{k}_0").input("Doe").run()
+    for _ in range(3):
+        at.button(key=f"edit_add_{k}").click().run()
+    at.text_input(key=f"edit_first_{k}_1").input("Rich")
+    at.text_input(key=f"edit_last_{k}_1").input("Roe")
+    at.text_input(key=f"edit_last_{k}_2").input("Urban Institute").run()
+    at.button(key=f"edit_drop_{k}_1").click().run()      # remove Roe
+    assert at.text_input(key=f"edit_last_{k}_0").value == "Doe"   # others kept
     at.text_input(key=f"edit_year_{k}").input("2023")
     _buttons(at)["Save edits"].click().run()
     p = _junk(job)
     assert (p["title"], p["authors"], p["year"]) == \
-        ("The Real Title", ["Doe, Jane", "Roe, Rich"], "2023")
+        ("The Real Title", ["Doe, Jane", "Urban Institute"], "2023")   # empty row left out
     assert "decision" not in p and "Mark ready for upload" in _buttons(at)   # back to the card
     _buttons(at)["Mark ready for upload"].click().run()
     assert p["decision"] == "edited"
@@ -556,3 +564,22 @@ def test_marked_item_shows_in_ready_and_move_to_review_sends_it_back():
     labels = [e.label for e in at.expander]
     assert "Ready (1)" in labels and "Left to review (1)" in labels
     assert "Upload 1 ready item to Zotero" in _buttons(at)
+
+
+def test_card_edit_fills_author_boxes_from_the_stored_names():
+    job = _scanned_job()
+    _junk(job)["authors"] = ["Zucman, Gabriel", "Urban Institute"]
+    at = _page()
+    _buttons(at)["Edit"].click().run()
+    import zlib
+    k = zlib.crc32(_junk(job)["url"].encode())
+    boxes = {b.key: b.value for b in at.text_input}
+    assert boxes[f"edit_first_{k}_0"] == "Gabriel" and boxes[f"edit_last_{k}_0"] == "Zucman"
+    assert boxes[f"edit_first_{k}_1"] == "" and boxes[f"edit_last_{k}_1"] == "Urban Institute"
+    _buttons(at)["Cancel"].click().run()
+    _junk(job)["authors"] = ["Saez, Emmanuel"]            # changed meanwhile
+    _buttons(at)["Edit"].click().run()
+    boxes = {b.key: b.value for b in at.text_input}
+    assert boxes[f"edit_last_{k}_0"] == "Saez" and f"edit_last_{k}_1" not in boxes
+    at.button(key=f"edit_add_{k}").click().run()
+    assert at.text_input(key=f"edit_last_{k}_1").value == ""   # no leftover name
