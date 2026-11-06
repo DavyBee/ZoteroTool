@@ -460,3 +460,53 @@ def test_random_clicking_never_breaks_the_page(monkeypatch, seed):
                 if p.get("decision") == "removed":
                     assert not p.get("include")
     assert len(sent) == len(set(sent))                     # nothing uploaded twice
+
+
+@pytest.mark.parametrize("seed", range(3))
+def test_random_table_actions_keep_results_consistent(seed):
+    """What the table buttons do to ticked rows, in random order on random
+    rows: Move to Review, Remove, Mark ready for upload, Undo, Save edits."""
+    import random
+
+    import app as page
+
+    def enrich(p, *a):
+        i = int(p["url"].rsplit("/", 1)[1])
+        return ({"metadata_source": "none"} if i % 3 == 0 else
+                {"metadata_source": "translator", "title": f"Paper {i}",
+                 "authors": ["Doe, Jane"], "year": "2024"})
+    assert scan.start_job([{"url": f"https://a.org/{i}", "comments": []} for i in range(15)],
+                          None, enrich=enrich, title_search=lambda *a: None)
+    job = scan.current_job()
+    _wait(job, scan.SCANNED)
+    rnd = random.Random(seed)
+    for _ in range(500):
+        ready = job.items(scan.READY)
+        left = [p for p in job.items(scan.REVIEW) if not p.get("decision")]
+        decided = [p for p in job.items(scan.REVIEW) if p.get("decision")]
+        table, action = rnd.choice([(ready, "move"), (ready, "remove"), (left, "mark"),
+                                    (left, "remove"), (decided, "undo"), (ready, "edit"),
+                                    (left, "edit")])
+        if not table:
+            continue
+        ticked = rnd.sample(table, rnd.randint(1, len(table)))
+        if action == "edit":
+            urls = [p["url"] for p in table]
+            page.apply_review_edits(job, urls, {
+                urls.index(p["url"]): {"Title": rnd.choice(["Same", "", "  New  "]),
+                                       "Authors": rnd.choice(["Doe,Jane", "", "A; B"]),
+                                       "Year": rnd.choice(["2024", "", "x"])}
+                for p in ticked})
+        else:
+            page.table_action(job, action, ticked)
+        for p in job.papers:
+            assert p["bucket"] in (scan.READY, scan.REVIEW)
+            if p["bucket"] == scan.READY:
+                assert p["include"] and not p.get("decision")
+            elif p.get("decision") in ("correct", "edited"):
+                assert p["include"]
+            else:
+                assert not p["include"]
+            assert isinstance(p.get("authors", []), list)
+    assert set(map(id, job.selected())) == {id(p) for p in job.papers if p["include"]}
+    scan._current = None
