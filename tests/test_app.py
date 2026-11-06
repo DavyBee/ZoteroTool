@@ -510,3 +510,30 @@ def test_random_table_actions_keep_results_consistent(seed):
             assert isinstance(p.get("authors", []), list)
     assert set(map(id, job.selected())) == {id(p) for p in job.papers if p["include"]}
     scan._current = None
+
+
+def test_stop_asks_in_a_dialog_then_clears_the_search():
+    import threading
+    gate = threading.Event()
+
+    def enrich(p, *a):
+        gate.wait(5)
+        return {"metadata_source": "none"}
+    assert scan.start_job([{"url": "https://a.org/1", "comments": []}], None,
+                          enrich=enrich, title_search=lambda *a: None)
+    try:
+        at = _page()
+        assert "Stop and clear" not in _buttons(at)
+        _buttons(at)["Stop"].click().run()
+        assert not at.exception
+        assert "This stops the search" in _text(at)
+        assert {"Pause", "Stop"} <= set(_buttons(at))     # layout unchanged
+        _buttons(at)["Cancel"].click().run()
+        assert "Stop and clear" not in _buttons(at)
+        assert scan.current_job() is not None
+        _buttons(at)["Stop"].click().run()
+        _buttons(at)["Stop and clear"].click().run()
+        assert not at.exception
+        assert scan.current_job() is None
+    finally:
+        gate.set()

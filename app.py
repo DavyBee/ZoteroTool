@@ -78,11 +78,25 @@ def zotero_ready() -> bool:
 # ── Layout helpers ────────────────────────────────────────────────────────────
 
 # Steps not reached yet are faded, with a line saying what they wait for.
-_STYLE = """
-<style>
-[class*="st-key-waiting-"] h3 { opacity: 0.4; }
-</style>
-"""
+# Stop, Remove, and Clear results are red; Move to Review is orange. A
+# disabled button keeps Streamlit's grey.
+_RED = ["stop", "stop_confirm", "card_remove", "t_ready_remove", "t_left_remove",
+        "start_over_confirm", "new_search_confirm"]
+_ORANGE = ["t_ready_move"]
+
+
+def _button_color(keys: list[str], color: str, hover: str) -> str:
+    sel = ", ".join(f".st-key-{k} button:not(:disabled)" for k in keys)
+    hov = ", ".join(f".st-key-{k} button:not(:disabled):hover" for k in keys)
+    return (f"{sel} {{ background-color: {color}; border-color: {color}; color: #fff; }}\n"
+            f"{hov} {{ background-color: {hover}; border-color: {hover}; color: #fff; }}\n")
+
+
+_STYLE = ("<style>\n"
+          '[class*="st-key-waiting-"] h3 { opacity: 0.4; }\n'
+          + _button_color(_RED, "#d93025", "#b3261e")
+          + _button_color(_ORANGE, "#e8710a", "#c35f08")
+          + "</style>")
 
 
 def step_header(number: int, title: str, state: str) -> None:
@@ -213,18 +227,8 @@ def progress(job: scan.Job, phase: str) -> None:
 
 
 def search_controls(job: scan.Job, snap: dict) -> None:
-    """Pause or Resume keeps the results so far; Stop clears everything."""
-    if st.session_state.get("confirm_stop"):
-        st.caption("This stops the search and clears its results.")
-        row = st.container(horizontal=True)
-        if row.button("Stop and clear", type="primary", key="stop_confirm"):
-            st.session_state.pop("confirm_stop", None)
-            scan.discard_job()
-            st.rerun(scope="app")
-        if row.button("Cancel", type="tertiary", key="stop_cancel"):
-            st.session_state.pop("confirm_stop", None)
-            st.rerun()
-        return
+    """Pause or Resume keeps the results so far; Stop clears everything,
+    after asking in a dialog (opened from step_scan, outside this fragment)."""
     row = st.container(horizontal=True)
     if snap["paused"]:
         if row.button("Resume", type="primary", key="resume"):
@@ -235,6 +239,23 @@ def search_controls(job: scan.Job, snap: dict) -> None:
         st.rerun()
     if row.button("Stop", key="stop"):
         st.session_state.confirm_stop = True
+        st.rerun(scope="app")
+
+
+def _cancel_stop() -> None:
+    st.session_state.pop("confirm_stop", None)
+
+
+@st.dialog("Stop search", on_dismiss=_cancel_stop)
+def confirm_stop() -> None:
+    st.write("This stops the search and clears its results.")
+    row = st.container(horizontal=True)
+    if row.button("Stop and clear", key="stop_confirm"):
+        _cancel_stop()
+        scan.discard_job()
+        st.rerun()
+    if row.button("Cancel", key="stop_cancel"):
+        _cancel_stop()
         st.rerun()
 
 
@@ -407,7 +428,7 @@ def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
     def act(label: str, action: str, primary: bool = False) -> None:
         bar.button(f"{label} ({n})" if n else label,
                    type="primary" if primary else "secondary",
-                   disabled=locked or not n, key=f"{name}_{label}",
+                   disabled=locked or not n, key=f"{name}_{action}",
                    on_click=table_action, args=(job, action, chosen))
 
     if mode == "decided":
@@ -601,6 +622,8 @@ def step_scan(job: scan.Job | None) -> None:
     if phase == scan.SCANNING:
         step_header(2, "Results of search", CURRENT)
         progress(job, scan.SCANNING)
+        if st.session_state.get("confirm_stop"):
+            confirm_stop()
         return
 
     if phase == scan.FAILED:
