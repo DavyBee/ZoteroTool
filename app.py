@@ -622,7 +622,7 @@ def _author_rows(p: dict, k: int) -> None:
                       label_visibility=shown)
         c3.button("Remove", type="tertiary", key=f"edit_drop_{k}_{rid}",
                   on_click=rows.remove, args=(rid,))
-    st.button("Add author", type="tertiary", key=f"edit_add_{k}",
+    st.button("Add author", key=f"edit_add_{k}",
               on_click=lambda: rows.append(max(rows, default=-1) + 1))
 
 
