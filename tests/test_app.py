@@ -118,7 +118,8 @@ def test_results_stay_after_upload_and_more_can_be_uploaded():
     at = _page()
     text = _text(at)
     assert "Done · Uploaded 1" in text
-    assert "**Ready" not in text                     # uploaded items leave Ready
+    assert "Ready (0)" in [e.label for e in at.expander]   # uploaded items leave Ready
+    assert "Nothing ready to upload." in text
     assert "Left to review (1)" in [e.label for e in at.expander]   # Review stays
     assert "New search" in _buttons(at)
     assert "Upload 1 ready item to Zotero" not in _buttons(at)   # nothing left selected

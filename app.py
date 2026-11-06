@@ -779,13 +779,15 @@ def step_scan(job: scan.Job | None) -> None:
     # wrong row when the list changes.
     suffix = zlib.crc32(query.strip().lower().encode())
 
-    if ready or not uploaded_any:
-        with st.expander(f"Ready ({_count(shown_ready, ready)})", expanded=True,
-                         key="exp_ready"):
-            if shown_ready:
-                st.caption("Metadata found. These are uploaded unless moved to Review or removed.")
-                _item_table(job, shown_ready, f"t_ready_{suffix}", locked, "ready",
-                            show_status=uploaded_any)
+    # Uploaded items leave Ready; the section stays, at 0 once all are sent.
+    with st.expander(f"Ready ({_count(shown_ready, ready)})", expanded=True,
+                     key="exp_ready"):
+        if shown_ready:
+            st.caption("Metadata found. These are uploaded unless moved to Review or removed.")
+            _item_table(job, shown_ready, f"t_ready_{suffix}", locked, "ready",
+                        show_status=uploaded_any)
+        elif not ready:
+            st.caption("Nothing ready to upload.")
 
     review_section(job, shown_review, locked)
 
