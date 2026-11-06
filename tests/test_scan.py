@@ -469,3 +469,12 @@ def test_damaged_saved_results_files_are_not_loaded():
     papers, _ = scan.read_saved_results(
         b'{"slack_to_zotero_saved_results": 1, "papers": [{"title": "no link"}, {"url": "https://a.org"}]}')
     assert papers == [{"url": "https://a.org"}]
+
+
+def test_author_names_typed_without_a_space_after_the_comma():
+    from slack_to_zotero.zotero_client import _build_creators
+    assert _build_creators(["Doe,Jane", " Roe , Rich ", "National Center for State Courts", ","]) == [
+        {"creatorType": "author", "firstName": "Jane", "lastName": "Doe"},
+        {"creatorType": "author", "firstName": "Rich", "lastName": "Roe"},
+        {"creatorType": "author", "firstName": "", "lastName": "National Center for State Courts"},
+    ]

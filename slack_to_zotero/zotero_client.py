@@ -402,8 +402,13 @@ def _build_creators(authors: list[str]) -> list[dict]:
         name = name.strip()
         if not name:
             continue
-        if ", " in name:
-            last, first = name.split(", ", 1)
+        if "," in name:                           # "Doe, Jane" or "Doe,Jane"
+            last, first = (part.strip() for part in name.split(",", 1))
+            if not last:                          # ", Jane" or ","
+                if first:
+                    creators.append({"creatorType": "author", "firstName": "",
+                                     "lastName": first})
+                continue
             creators.append({
                 "creatorType": "author",
                 "firstName":   first.strip(),
