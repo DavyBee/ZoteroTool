@@ -478,3 +478,26 @@ def test_author_names_typed_without_a_space_after_the_comma():
         {"creatorType": "author", "firstName": "Rich", "lastName": "Roe"},
         {"creatorType": "author", "firstName": "", "lastName": "National Center for State Courts"},
     ]
+
+
+def test_items_cannot_change_while_uploading():
+    import threading as th
+    release = th.Event()
+
+    def slow_upload(papers, zot, progress_cb, log_cb):
+        release.wait(5)
+        return {"uploaded": len(papers), "failed": 0, "errors": []}
+
+    job = scan.Job(_papers(2), None, title_search=lambda *a: None,
+                   enrich=lambda p, *a: {"metadata_source": "translator", "title": p["url"]})
+    job.start()
+    _wait(job, scan.SCANNED)
+    job.start_upload(lambda: None, upload=slow_upload)
+    _wait(job, scan.UPLOADING)
+    a = job.papers[0]
+    job.edit(a["url"], {"title": "Changed mid-upload"})
+    job.move_to_review(a["url"])
+    job.set_include(a["url"], False)
+    assert (a["title"], a["bucket"], a["include"]) == ("https://a.org/0", scan.READY, True)
+    release.set()
+    _wait(job, scan.DONE)

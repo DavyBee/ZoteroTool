@@ -412,8 +412,15 @@ class Job:
             else _sort_title
         return sorted(rows, key=key)
 
+    def _changeable(self) -> bool:
+        """Items can change only between a scan and an upload, not while
+        either runs (a click from a page drawn earlier can still arrive)."""
+        return self.phase in (SCANNED, DONE)
+
     def set_include(self, url: str, include: bool) -> None:
         with self.lock:
+            if not self._changeable():
+                return
             for p in self.papers:
                 if p["url"] == url and p.get("bucket") != EXISTING:
                     p["include"] = include
@@ -429,6 +436,8 @@ class Job:
         """Record a review decision (None clears it), applying edited fields."""
         assert decision is None or decision in self.DECISIONS
         with self.lock:
+            if not self._changeable():
+                return
             for p in self.papers:
                 if p["url"] == url and p.get("bucket") == REVIEW:
                     if fields:
@@ -443,6 +452,8 @@ class Job:
     def move_to_review(self, url: str) -> None:
         """Send a Ready item to Review, to decide on it there."""
         with self.lock:
+            if not self._changeable():
+                return
             for p in self.papers:
                 if p["url"] == url and p.get("bucket") == READY \
                         and not p.get("zotero_key"):
@@ -454,6 +465,8 @@ class Job:
     def edit(self, url: str, fields: dict) -> None:
         """Change a Ready or Review item's details (without deciding on it)."""
         with self.lock:
+            if not self._changeable():
+                return
             for p in self.papers:
                 if p["url"] == url and p.get("bucket") in (READY, REVIEW) \
                         and not p.get("zotero_key"):
