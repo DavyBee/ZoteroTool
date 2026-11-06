@@ -490,6 +490,8 @@ class Job:
                 return
             for p in self.papers:
                 if p["url"] == url and p.get("bucket") != EXISTING:
+                    if include and p.get("decision") == "removed":
+                        return                     # Undo the removal first
                     p["include"] = include
                     return
 

@@ -698,3 +698,56 @@ def test_upload_reports_persistent_rate_limiting_plainly(monkeypatch):
     _wait(job, scan.DONE)
     p = job.papers[0]
     assert "limiting requests" in p["upload_error"] and p["include"]   # ready to Retry
+
+
+def test_many_people_changing_results_at_once_stays_consistent():
+    import random
+    import threading as th
+
+    def enrich(p, *a):
+        i = int(p["url"].rsplit("/", 1)[1])
+        return ({"metadata_source": "translator", "title": f"Paper {i}"} if i % 2
+                else {"metadata_source": "none"})
+    job = scan.Job(_papers(40), None, title_search=lambda *a: None, enrich=enrich)
+    job.start()
+    _wait(job, scan.SCANNED)
+    urls = [p["url"] for p in job.papers]
+    errors = []
+
+    def person(seed):
+        rnd = random.Random(seed)
+        try:
+            for _ in range(300):
+                url = rnd.choice(urls)
+                action = rnd.randrange(5)
+                if action == 0:
+                    job.decide(url, rnd.choice([None, "correct", "edited", "removed"]))
+                elif action == 1:
+                    job.edit(url, {"title": rnd.choice(["Same Title", f"T{rnd.random()}"])})
+                elif action == 2:
+                    job.move_to_review(url)
+                elif action == 3:
+                    job.set_include(url, rnd.random() < 0.5)
+                else:
+                    job.snapshot()
+                    job.selected()
+        except Exception as exc:                       # noqa: BLE001
+            errors.append(exc)
+
+    zot = FakeZotero()
+    people = [th.Thread(target=person, args=(i,)) for i in range(8)]
+    for t in people:
+        t.start()
+    job.start_upload(lambda: zot)
+    for t in people:
+        t.join()
+    _wait(job, scan.DONE, timeout=10)
+    assert not errors
+    created = [i["url"] for i in zot.created]
+    assert len(created) == len(set(created))               # nothing uploaded twice
+    for p in job.papers:
+        assert p["bucket"] in (scan.READY, scan.REVIEW, scan.EXISTING)
+        if p.get("decision") == "removed":
+            assert not p["include"]
+        if p.get("zotero_key"):
+            assert p["url"] in created
