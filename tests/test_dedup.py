@@ -302,7 +302,7 @@ def test_attachment_failure_is_reported_not_silent(monkeypatch, tmp_path):
     pdf.write_bytes(b"%PDF-1.4 test")
 
     class Zot:
-        def create_items(self, items, **kwargs):
+        def create_items(self, items):
             if items[0]["itemType"] == "attachment":
                 return {"successful": {}, "failed": {"0": {"code": 400, "message": "nope"}}}
             return {"successful": {"0": {"data": {"key": "P1"}}}, "failed": {}}
