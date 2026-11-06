@@ -592,15 +592,15 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
 def _edit_fields(p: dict) -> dict:
     """The card's details as inputs, in place of the plain text."""
     k = zlib.crc32(p["url"].encode())      # one set of inputs per item
-    title = st.text_input("Title", value=p.get("title") or p.get("slack_file_name") or "",
+    title = st.text_input("**Title**", value=p.get("title") or p.get("slack_file_name") or "",
                           key=f"edit_title_{k}")
     _author_rows(p, k)
     c1, c2, c3 = st.columns([1, 2, 3])
-    year = c1.text_input("Year", value=p.get("year") or "", key=f"edit_year_{k}")
+    year = c1.text_input("**Year**", value=p.get("year") or "", key=f"edit_year_{k}")
     kind = p.get("item_type") if p.get("item_type") in _ITEM_TYPES else "journalArticle"
-    item_type = c2.selectbox("Type", _ITEM_TYPES, index=_ITEM_TYPES.index(kind),
+    item_type = c2.selectbox("**Type**", _ITEM_TYPES, index=_ITEM_TYPES.index(kind),
                              key=f"edit_type_{k}")
-    journal = c3.text_input("Journal or website", value=p.get("journal") or "",
+    journal = c3.text_input("**Journal or website**", value=p.get("journal") or "",
                             key=f"edit_journal_{k}")
     return {"title": title.strip() or None,
             "authors": _typed_authors(k),
@@ -626,7 +626,7 @@ def _author_rows(p: dict, k: int) -> None:
             st.session_state[f"edit_first_{k}_{rid}"] = first
             st.session_state[f"edit_last_{k}_{rid}"] = last
     rows = st.session_state[rows_key]
-    st.markdown('<p style="font-size:14px;margin:0 0 4px">Authors</p>',
+    st.markdown('<p style="font-size:14px;margin:0 0 4px"><b>Authors</b></p>',
                 unsafe_allow_html=True)
     for n, rid in enumerate(rows):
         c1, c2, c3 = st.columns([3, 3, 1], vertical_alignment="bottom")
@@ -634,7 +634,7 @@ def _author_rows(p: dict, k: int) -> None:
         c1.text_input("First name", key=f"edit_first_{k}_{rid}", label_visibility=shown)
         c2.text_input("Last name *(or organisation)*", key=f"edit_last_{k}_{rid}",
                       label_visibility=shown)
-        c3.button("Remove", type="tertiary", key=f"edit_drop_{k}_{rid}",
+        c3.button("Remove", key=f"edit_drop_{k}_{rid}",
                   on_click=rows.remove, args=(rid,))
     st.button("Add author", key=f"edit_add_{k}",
               on_click=lambda: rows.append(max(rows, default=-1) + 1))
