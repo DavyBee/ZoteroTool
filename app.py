@@ -597,6 +597,9 @@ def step_scan(job: scan.Job | None) -> None:
     if phase == scan.FAILED:
         step_header(2, "Results of search", CURRENT)
         st.error(snap["fatal_error"])
+        if st.button("Try again", type="primary", key="retry_search"):
+            scan.retry_job()
+            st.rerun()
         return
 
     ready, review = job.items(scan.READY), job.items(scan.REVIEW)

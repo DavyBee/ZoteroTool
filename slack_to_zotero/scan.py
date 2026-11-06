@@ -11,6 +11,7 @@ No Streamlit imports here, so the whole flow is testable without the UI.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -739,7 +740,24 @@ def start_job(papers: list[dict], anthropic_key: Optional[str],
     with _current_lock:
         if _current is not None and _current.snapshot()["phase"] in (SCANNING, UPLOADING):
             return False
+        # A copy as found in the export, for Try again after a failed start.
+        original = copy.deepcopy(papers)
         _current = Job(papers, anthropic_key, audit_log_path, **kwargs)
+        _current.restart = lambda: Job(copy.deepcopy(original), anthropic_key,
+                                       audit_log_path, **kwargs)
+        _current.start()
+        return True
+
+
+def retry_job() -> bool:
+    """Start a search that failed (e.g. Zotero was unreachable) again, with
+    the same export."""
+    global _current
+    with _current_lock:
+        if _current is None or _current.snapshot()["phase"] != FAILED \
+                or not getattr(_current, "restart", None):
+            return False
+        _current = _current.restart()
         _current.start()
         return True
 

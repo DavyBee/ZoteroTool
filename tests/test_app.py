@@ -372,3 +372,25 @@ def test_failed_batches_are_not_listed_as_file_warnings():
     at = _page()
     assert not [e for e in at.expander if e.label.startswith("Warnings")]
     assert "Retry failed" in _buttons(at)
+
+
+def test_a_failed_search_can_be_tried_again():
+    attempts = []
+
+    def load_index():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise ConnectionError("network down")
+        from slack_to_zotero.zotero_index import LibraryIndex
+        return LibraryIndex()
+
+    assert scan.start_job([{"url": "https://a.org/paper", "comments": []}], None,
+                          load_index=load_index, title_search=lambda *a: None,
+                          enrich=lambda p, *a: {"metadata_source": "translator", "title": "A Paper"},
+                          source={"label": "export.zip"})
+    _wait(scan.current_job(), scan.FAILED)
+    at = _page()
+    assert "Couldn't reach Zotero" in at.error[0].value
+    _buttons(at)["Try again"].click().run()
+    _wait(scan.current_job(), scan.SCANNED)
+    assert scan.current_job().items(scan.READY)[0]["title"] == "A Paper"
