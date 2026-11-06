@@ -318,3 +318,29 @@ def test_pdf_text_extraction_stops_after_enough_text(monkeypatch):
     monkeypatch.setattr(pypdf, "PdfReader", Reader)
     text = metadata._extract_pdf_text(b"%PDF", max_chars=5000)
     assert len(read) == 5 and len(text) >= 5000
+
+
+def test_a_rejected_anthropic_key_stops_further_ai_calls(monkeypatch, tmp_path):
+    import types
+
+    calls = []
+
+    class Rejected(Exception):
+        status_code = 401
+
+    class Client:
+        def __init__(self, api_key):
+            self.messages = types.SimpleNamespace(create=self.create)
+
+        def create(self, **kw):
+            calls.append(kw)
+            raise Rejected("invalid x-api-key")
+
+    import anthropic
+    monkeypatch.setattr(anthropic, "Anthropic", Client)
+    monkeypatch.setattr(metadata, "llm_problem", None)
+    log = str(tmp_path / "audit.jsonl")
+    for _ in range(3):
+        assert metadata.fetch_llm("https://a.org/x", [], "bad-key", log, page_text="text") is None
+    assert len(calls) == 1
+    assert "rejected" in metadata.llm_problem

@@ -623,6 +623,24 @@ _LLM_REQUIRED_KEYS = {"title", "authors", "year", "item_type"}
 _LOW_CONTEXT_CHARS = 500
 
 
+# Set when the Anthropic key is rejected or out of credit. Later items then
+# skip the AI step (every call would fail the same way), and the page says why
+# so many items are in Review. scan.Job clears it when a search starts.
+llm_problem: Optional[str] = None
+
+
+def _account_problem(e: Exception) -> Optional[str]:
+    status = getattr(e, "status_code", None)
+    text = str(e).lower()
+    if status == 401:
+        return "The Anthropic key was rejected. Check it in the app's secrets."
+    if "credit balance" in text or "billing" in text:
+        return "The Anthropic account is out of credit."
+    if status == 403:
+        return "The Anthropic key isn't allowed to use the model."
+    return None
+
+
 def fetch_llm(url: str, comments: list[Comment],
               anthropic_key: str, audit_log_path: str,
               page_text: Optional[str] = None,
@@ -633,6 +651,9 @@ def fetch_llm(url: str, comments: list[Comment],
     (the first pages of a scanned PDF, read as images). Every request and
     response is appended to audit_log_path.
     """
+    global llm_problem
+    if llm_problem:
+        return None
     try:
         import anthropic as anthropic_sdk
     except ImportError:
@@ -789,6 +810,7 @@ def fetch_llm(url: str, comments: list[Comment],
                               f"and auto-fallback found no replacement: {e}")
         else:
             audit["error"] = f"{type(e).__name__}: {e}"
+            llm_problem = llm_problem or _account_problem(e)
         return None
     finally:
         try:

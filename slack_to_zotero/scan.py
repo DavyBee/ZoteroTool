@@ -301,6 +301,7 @@ class Job:
             return {"metadata_source": "none", "scan_error": f"{type(exc).__name__}: {exc}"}
 
     def _run_scan(self) -> None:
+        metadata.llm_problem = None
         if self._load_index is not None:
             try:
                 index = self._load_index()
@@ -579,7 +580,8 @@ class Job:
                     "upload_result": self.upload_result,
                     "skipped_existing": self.skipped_existing,
                     "stopping": self.stop_requested and self.phase == SCANNING,
-                    "paused": not self._running.is_set() and self.phase == SCANNING}
+                    "paused": not self._running.is_set() and self.phase == SCANNING,
+                    "llm_problem": metadata.llm_problem if self.anthropic_key else None}
 
 
 def _same_work(p: dict, q: dict, t: str, y: Optional[str]) -> bool:

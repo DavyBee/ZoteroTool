@@ -605,6 +605,9 @@ def step_scan(job: scan.Job | None) -> None:
         st.error("The search stopped because of an error. Items it didn't reach are in Review.")
         with st.expander("Details"):
             st.code(snap["fatal_error"], language=None)
+    if snap["llm_problem"]:
+        st.warning(f"{snap['llm_problem']} Items that needed the AI step are in Review; "
+                   "search again once it's fixed.")
 
     uploaded_any = any(_status(p) for p in ready + review)
     locked = phase == scan.UPLOADING
