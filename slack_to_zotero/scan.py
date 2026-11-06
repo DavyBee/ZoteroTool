@@ -495,6 +495,10 @@ class Job:
                     else:
                         p["decision"] = decision
                     p["include"] = decision in ("correct", "edited")
+                    if p["include"]:
+                        p["marked_at"] = time.time()   # newest first in Ready
+                    else:
+                        p.pop("marked_at", None)
                     return
 
     def move_to_review(self, url: str) -> None:
@@ -770,7 +774,7 @@ SAVED_MARK = "slack_to_zotero_saved_results"
 _NOT_SAVED = ("bucket", "reason", "include", "decision", "was_edited", "zotero_key",
               "upload_error", "existing_key", "existing_how", "existing_url",
               "existing_title", "local_pdf_path", "pdf_size_bytes", "not_scanned",
-              "scan_error")
+              "scan_error", "marked_at")
 
 
 def saved_results(papers: list[dict], label: str) -> bytes:

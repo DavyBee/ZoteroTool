@@ -396,6 +396,15 @@ def _review_table(job: scan.Job, items: list[dict], locked: bool) -> None:
     _item_table(job, items, "t_left", locked, "left")
 
 
+def ready_items(ready: list[dict], review: list[dict]) -> list[dict]:
+    """What the Ready table shows: items the search found plus those marked
+    ready in Review, the marked ones first with the newest at the top.
+    Uploaded items are left out."""
+    marked = [p for p in review if p.get("decision") in ("correct", "edited")]
+    return sorted((p for p in ready + marked if not p.get("zotero_key")),
+                  key=lambda p: (-(p.get("marked_at") or 0), scan._sort_title(p)))
+
+
 def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
                 mode: str, show_status: bool = False) -> None:
     """Items as an editable table: tick rows in the first column, then act on
@@ -414,13 +423,15 @@ def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
                     "Year": p.get("year") or "", "Journal": p.get("journal") or ""})
         if mode != "ready":
             row["Summary"] = p.get("summary") or ""
+        else:
+            row["Added by"] = "User" if p.get("decision") else "Search"
         rows.append(row)
     urls = [p["url"] for p in items]
     key = f"{name}_{st.session_state.get('table_version', 0)}"
     columns = list(rows[0])
     st.data_editor(
         rows, key=key, hide_index=True,
-        disabled=columns if locked else ["Link", "Status", "Reason", "Summary"],
+        disabled=columns if locked else ["Link", "Status", "Reason", "Summary", "Added by"],
         column_config={
             "Select": st.column_config.CheckboxColumn("", width=40),
             "Link": st.column_config.LinkColumn(display_text="Open", width=50),
@@ -431,6 +442,7 @@ def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
             "Year": st.column_config.TextColumn(width=70),
             "Journal": st.column_config.TextColumn(width=150),
             "Summary": st.column_config.TextColumn(width=220),
+            "Added by": st.column_config.TextColumn(width=80),
         },
     )
     changes = st.session_state.get(key, {}).get("edited_rows", {})
@@ -729,9 +741,7 @@ def step_scan(job: scan.Job | None) -> None:
     # Ready shows everything that will be uploaded: items the search found
     # plus those marked ready in Review. Uploaded items leave it; step 3
     # reports them.
-    marked = [p for p in review if p.get("decision") in ("correct", "edited")]
-    ready = sorted((p for p in ready + marked if not p.get("zotero_key")),
-                   key=scan._sort_title)
+    ready = ready_items(ready, review)
     shown_ready, shown_review = _matching(ready, query), _matching(review, query)
     # A different key per search, so a ticked box can't carry over to the
     # wrong row when the list changes.

@@ -583,3 +583,24 @@ def test_card_edit_fills_author_boxes_from_the_stored_names():
     assert boxes[f"edit_last_{k}_0"] == "Saez" and f"edit_last_{k}_1" not in boxes
     at.button(key=f"edit_add_{k}").click().run()
     assert at.text_input(key=f"edit_last_{k}_1").value == ""   # no leftover name
+
+
+def test_ready_lists_items_marked_by_a_person_first_newest_at_the_top():
+    import app as page
+
+    def enrich(p, *a):
+        i = int(p["url"].rsplit("/", 1)[1])
+        return ({"metadata_source": "none"} if i >= 2 else
+                {"metadata_source": "translator", "title": f"Paper {i}"})
+    assert scan.start_job([{"url": f"https://a.org/{i}", "comments": []} for i in range(4)],
+                          None, enrich=enrich, title_search=lambda *a: None)
+    job = scan.current_job()
+    _wait(job, scan.SCANNED)
+    job.decide("https://a.org/2", "correct")
+    time.sleep(0.01)
+    job.decide("https://a.org/3", "correct")
+    shown = page.ready_items(job.items(scan.READY), job.items(scan.REVIEW))
+    assert [p["url"][-1] for p in shown] == ["3", "2", "0", "1"]
+    job.decide("https://a.org/3", None)             # unmarked: back to Review
+    shown = page.ready_items(job.items(scan.READY), job.items(scan.REVIEW))
+    assert [p["url"][-1] for p in shown] == ["2", "0", "1"]
