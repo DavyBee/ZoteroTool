@@ -291,6 +291,7 @@ CITOID_ATTEMPTS = 3
 # Room for models that think before answering (the reply itself is ~300 tokens).
 # Only tokens actually generated are billed.
 LLM_MAX_TOKENS = 4000
+LLM_TIMEOUT = 90           # seconds per request
 CITOID_RETRY_WAIT = 3.0      # seconds; multiplied by the attempt number
 
 
@@ -760,7 +761,9 @@ def fetch_llm(url: str, comments: list[Comment],
     }
 
     try:
-        client = anthropic_sdk.Anthropic(api_key=anthropic_key)
+        # A reply takes seconds; the SDK's default wait is ten minutes, which
+        # would hold up a search worker on a stalled connection.
+        client = anthropic_sdk.Anthropic(api_key=anthropic_key, timeout=LLM_TIMEOUT)
         messages = [{"role": "user", "content": content}]
         try:
             resp = client.messages.create(model=model, max_tokens=LLM_MAX_TOKENS,
@@ -831,7 +834,7 @@ def _auto_heal_model(anthropic_key: str, current_model: str) -> Optional[str]:
     model id, or None if none could be found."""
     try:
         import anthropic as anthropic_sdk
-        models = anthropic_sdk.Anthropic(api_key=anthropic_key).models.list(
+        models = anthropic_sdk.Anthropic(api_key=anthropic_key, timeout=LLM_TIMEOUT).models.list(
             limit=1000).data
     except Exception:
         return None

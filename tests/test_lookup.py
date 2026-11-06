@@ -200,7 +200,7 @@ def _fake_anthropic(monkeypatch, content, stop_reason="end_turn"):
             return types.SimpleNamespace(content=content, stop_reason=stop_reason)
 
     class Client:
-        def __init__(self, api_key=None):
+        def __init__(self, api_key=None, **kwargs):
             self.messages = Messages()
 
     monkeypatch.setitem(sys.modules, "anthropic", types.SimpleNamespace(Anthropic=Client))
@@ -329,7 +329,7 @@ def test_a_rejected_anthropic_key_stops_further_ai_calls(monkeypatch, tmp_path):
         status_code = 401
 
     class Client:
-        def __init__(self, api_key):
+        def __init__(self, api_key, **kwargs):
             self.messages = types.SimpleNamespace(create=self.create)
 
         def create(self, **kw):
