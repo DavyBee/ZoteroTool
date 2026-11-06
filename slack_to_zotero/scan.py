@@ -24,6 +24,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Optional
 
+from . import http_fetch
 from . import metadata
 from . import slack_parser
 from .records import new_paper, normalize_url
@@ -216,6 +217,11 @@ def apply_hints(paper: dict, title_search: Callable[..., Optional[tuple]]) -> No
 
 # ── The job ───────────────────────────────────────────────────────────────────
 
+# While the internet is unreachable, an item's lookups all fail and it would be
+# judged wrongly ("No metadata found"). The search waits instead, checking
+# again every so often, and looks the item up once the connection is back.
+CONNECTION_RETRY_SECONDS = 15
+
 SCANNING, SCANNED, UPLOADING, DONE, FAILED = (
     "scanning", "scanned", "uploading", "done", "failed")
 WORKERS = 4
@@ -234,7 +240,8 @@ class Job:
                  load_index: Optional[Callable[[], LibraryIndex]] = None,
                  refresh_index: Optional[Callable[[LibraryIndex], None]] = None,
                  title_search: Callable[..., Optional[tuple]] = metadata.search_crossref_title,
-                 source: Optional[dict] = None):
+                 source: Optional[dict] = None,
+                 is_online: Optional[Callable[[], bool]] = None):
         self.papers = papers
         # What was scanned, for the page's summary: {"label", "files", "channel"}.
         self.source = source or {}
@@ -246,6 +253,8 @@ class Job:
         self._load_index = load_index
         self._refresh_index = refresh_index
         self._title_search = title_search
+        self._is_online = is_online or http_fetch.online
+        self._waiting = 0                        # threads waiting for the connection
         self.index: Optional[LibraryIndex] = None
         self.lock = threading.RLock()
         self.phase = SCANNING
@@ -293,13 +302,33 @@ class Job:
         self._running.wait()
         if self.stop_requested:
             return {"metadata_source": "none", "not_scanned": True}
+        while True:
+            try:
+                fields = self._enrich(paper, self.anthropic_key, self.audit_log_path)
+                trial = {**paper, **fields}
+                apply_hints(trial, self._title_search)
+                result = {k: v for k, v in trial.items() if paper.get(k) is not v}
+            except Exception as exc:
+                result = {"metadata_source": "none", "scan_error": f"{type(exc).__name__}: {exc}"}
+            found = classify({**paper, **result})[0] == READY
+            if found or self.stop_requested or self._is_online():
+                return result
+            self._wait_for_connection()
+            if self.stop_requested:
+                return {"metadata_source": "none", "not_scanned": True}
+
+    def _wait_for_connection(self) -> None:
+        with self.lock:
+            self._waiting += 1
+            self.step = "Waiting for connection"
         try:
-            fields = self._enrich(paper, self.anthropic_key, self.audit_log_path)
-            trial = {**paper, **fields}
-            apply_hints(trial, self._title_search)
-            return {k: v for k, v in trial.items() if paper.get(k) is not v}
-        except Exception as exc:
-            return {"metadata_source": "none", "scan_error": f"{type(exc).__name__}: {exc}"}
+            while not self.stop_requested and not self._is_online():
+                time.sleep(CONNECTION_RETRY_SECONDS)
+        finally:
+            with self.lock:
+                self._waiting -= 1
+                if not self._waiting:
+                    self.step = "Searching"
 
     def _run_scan(self) -> None:
         metadata.llm_problem = None

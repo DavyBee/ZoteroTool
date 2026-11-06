@@ -601,3 +601,37 @@ def test_clearing_results_deletes_their_downloaded_files(monkeypatch, tmp_path):
     scan.clear_job()
     assert not pdf.exists() and kept.exists()       # only files in the app's folder
     kept.unlink()
+
+
+def test_search_waits_out_a_lost_connection_instead_of_misjudging_items(monkeypatch):
+    online = {"up": False}
+    calls = []
+
+    def enrich(p, *a):
+        calls.append(p["url"])
+        if not online["up"]:
+            return {"metadata_source": "none"}            # lookups fail offline
+        return {"metadata_source": "translator", "title": p["url"]}
+
+    monkeypatch.setattr(scan, "CONNECTION_RETRY_SECONDS", 0.05)
+    job = scan.Job(_papers(2), None, title_search=lambda *a: None, enrich=enrich,
+                   is_online=lambda: online["up"])
+    job.start()
+    end = time.time() + 5
+    while job.snapshot()["step"] != "Waiting for connection":
+        assert time.time() < end
+        time.sleep(0.01)
+    assert job.snapshot()["phase"] == scan.SCANNING
+    online["up"] = True
+    _wait(job, scan.SCANNED)
+    assert all(p["bucket"] == scan.READY for p in job.papers)   # judged once back online
+
+
+def test_stop_ends_a_search_waiting_for_connection(monkeypatch):
+    monkeypatch.setattr(scan, "CONNECTION_RETRY_SECONDS", 0.05)
+    job = scan.Job(_papers(2), None, title_search=lambda *a: None,
+                   enrich=lambda p, *a: {"metadata_source": "none"}, is_online=lambda: False)
+    job.start()
+    time.sleep(0.2)
+    job.stop()
+    _wait(job, scan.SCANNED)

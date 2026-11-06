@@ -98,3 +98,8 @@ def test_zotero_fields_the_app_sends_still_exist():
         venue = zc._VENUE_FIELD.get(kind)
         assert venue is None or venue in have, (kind, venue)
         assert (kind in zc._HAS_ISBN) == ("ISBN" in have), (kind, "ISBN")
+
+
+def test_connection_check_reaches_crossref():
+    http_fetch._online_checked = (0.0, False)
+    assert http_fetch.online(), "the connection check can't reach CrossRef"
