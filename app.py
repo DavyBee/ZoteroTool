@@ -228,7 +228,8 @@ def progress(job: scan.Job, phase: str) -> None:
 
 def search_controls(job: scan.Job, snap: dict) -> None:
     """Pause or Resume keeps the results so far; Stop clears everything,
-    after asking in a dialog (opened from step_scan, outside this fragment)."""
+    after asking in a dialog (opened from step_scan, outside this fragment).
+    The search is paused while the dialog is open."""
     row = st.container(horizontal=True)
     if snap["paused"]:
         if row.button("Resume", type="primary", key="resume"):
@@ -238,12 +239,20 @@ def search_controls(job: scan.Job, snap: dict) -> None:
         job.pause()
         st.rerun()
     if row.button("Stop", key="stop"):
+        if not snap["paused"]:
+            job.pause()
+            st.session_state.stop_paused = True   # resume it if Stop is cancelled
         st.session_state.confirm_stop = True
         st.rerun(scope="app")
 
 
 def _cancel_stop() -> None:
+    """Close the Stop dialog, resuming the search if the dialog paused it."""
     st.session_state.pop("confirm_stop", None)
+    if st.session_state.pop("stop_paused", False):
+        job = scan.current_job()
+        if job is not None:
+            job.resume()
 
 
 @st.dialog("Stop search", on_dismiss=_cancel_stop)
@@ -251,7 +260,8 @@ def confirm_stop() -> None:
     st.write("This stops the search and clears its results.")
     row = st.container(horizontal=True)
     if row.button("Stop and clear", key="stop_confirm"):
-        _cancel_stop()
+        st.session_state.pop("confirm_stop", None)
+        st.session_state.pop("stop_paused", None)
         scan.discard_job()
         st.rerun()
     if row.button("Cancel", key="stop_cancel"):

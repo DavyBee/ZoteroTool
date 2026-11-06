@@ -527,10 +527,15 @@ def test_stop_asks_in_a_dialog_then_clears_the_search():
         _buttons(at)["Stop"].click().run()
         assert not at.exception
         assert "This stops the search" in _text(at)
-        assert {"Pause", "Stop"} <= set(_buttons(at))     # layout unchanged
+        assert scan.current_job().snapshot()["paused"]      # paused while asking
         _buttons(at)["Cancel"].click().run()
         assert "Stop and clear" not in _buttons(at)
-        assert scan.current_job() is not None
+        assert not scan.current_job().snapshot()["paused"]  # Cancel resumes it
+        scan.current_job().pause()                          # paused by the user:
+        at.run()
+        _buttons(at)["Stop"].click().run()
+        _buttons(at)["Cancel"].click().run()
+        assert scan.current_job().snapshot()["paused"]      # Cancel keeps it paused
         _buttons(at)["Stop"].click().run()
         _buttons(at)["Stop and clear"].click().run()
         assert not at.exception
