@@ -437,3 +437,27 @@ def test_html_entities_are_cleaned_from_journals_and_authors():
     scan._tidy(p)
     assert (p["title"], p["journal"], p["authors"]) == \
         ("Rent & Eviction", "City & Community", ["O'Brien, Ann"])
+
+
+def test_items_edited_into_duplicates_upload_once():
+    def enrich(p, key, log):
+        i = int(p["url"].rsplit("/", 1)[1])
+        if i < 2:
+            return {"metadata_source": "translator", "title": f"Paper {i}",
+                    "authors": ["Doe, Jane"], "year": "2024", "item_type": "journalArticle"}
+        return {"metadata_source": "none"}                   # to Review
+
+    job = scan.Job(_papers(4), None, title_search=lambda *a: None, enrich=enrich)
+    job.start()
+    _wait(job, scan.SCANNED)
+    same = {"title": "Paper 0", "authors": ["Doe, Jane"], "year": "2024",
+            "item_type": "journalArticle"}
+    for url in ("https://a.org/2", "https://a.org/3"):        # two Review items edited
+        job.edit(url, same)                                 # to match a Ready one
+        job.decide(url, "edited")
+    zot = FakeZotero()
+    job.start_upload(lambda: zot)
+    _wait(job, scan.DONE)
+    assert sorted(i["title"] for i in zot.created) == ["Paper 0", "Paper 1"]
+    dup = next(p for p in job.papers if p["url"] == "https://a.org/2")
+    assert dup["bucket"] == scan.EXISTING and not dup["include"]

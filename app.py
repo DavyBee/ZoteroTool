@@ -657,7 +657,7 @@ def step_upload(job: scan.Job | None) -> None:
             parts.append(f"{len(failed)} failed")
         skipped = snap["skipped_existing"]
         if skipped:
-            parts.append(f"{skipped} skipped because they were added to Zotero after the search")
+            parts.append(f"{skipped} skipped as duplicates")
         summary(parts, done=finished)
         if failed:
             st.dataframe([{"Title": p.get("title") or p["url"], "Error": p["upload_error"]}

@@ -494,25 +494,44 @@ class Job:
         self._thread.start()
 
     def _recheck(self, papers: list[dict]) -> list[dict]:
-        """Drop anything added to Zotero since the scan read it."""
-        if self._refresh_index is None or self.index is None:
-            return papers
-        try:
-            self._refresh_index(self.index)
-        except Exception:
-            return papers                  # the upload itself will report it
+        """Drop anything added to Zotero since the scan read it, and anything
+        that is the same work as another item in this upload (two items can
+        be edited into one). Ready items are kept over Review items."""
+        refreshed = False
+        if self._refresh_index is not None and self.index is not None:
+            try:
+                self._refresh_index(self.index)
+                refreshed = True
+            except Exception:
+                pass                       # the upload itself will report it
+        from .zotero_client import paper_to_zotero_item
+        batch = LibraryIndex()
         out = []
         with self.lock:
-            for p in papers:
-                hit = self.index.match(p)
+            for p in sorted(papers, key=lambda p: p.get("bucket") != READY):
+                hit = self.index.match(p) if refreshed else None
                 if hit:
                     self._mark_existing(p, hit)
-                else:
-                    out.append(p)
+                    continue
+                twin = batch.match(p)
+                if twin:
+                    self._mark_same_as(p, twin[0])
+                    continue
+                batch.add({**paper_to_zotero_item(p), "key": p["url"]})
+                out.append(p)
+            out.sort(key=papers.index)
             self.skipped_existing = len(papers) - len(out)
             self.total = len(out)
             self.step = "Uploading"
         return out
+
+    def _mark_same_as(self, paper: dict, url: str) -> None:
+        """Leave out an item that duplicates another one in the same upload."""
+        other = next(p for p in self.papers if p["url"] == url)
+        paper.update(existing_key=url, existing_how="Same as another item in this upload",
+                     existing_title=other.get("title"), existing_url=url)
+        paper["bucket"], paper["reason"] = classify(paper)
+        paper["include"] = False
 
     def _run_upload(self, papers, make_client, upload) -> None:
         def progress(done: int, total: int) -> None:
