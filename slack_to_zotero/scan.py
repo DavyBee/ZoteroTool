@@ -677,7 +677,11 @@ def read_saved_results(data: bytes) -> Optional[tuple[list[dict], str]]:
         return None
     if not isinstance(saved, dict) or SAVED_MARK not in saved:
         return None
-    return saved["papers"], saved.get("label") or "Saved results"
+    papers = saved.get("papers")
+    if not isinstance(papers, list):
+        return None
+    papers = [p for p in papers if isinstance(p, dict) and isinstance(p.get("url"), str)]
+    return papers, saved.get("label") or "Saved results"
 
 
 def load_saved_job(papers: list[dict], label: str, **kwargs) -> bool:

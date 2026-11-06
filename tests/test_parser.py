@@ -230,3 +230,22 @@ def test_tweet_title_includes_the_date_when_the_id_has_one():
     assert slack_parser.tweet_title("https://x.com/nberpubs/status/1770873531364257837") == \
         "Post by @nberpubs, 21 Mar 2024"
     assert slack_parser.tweet_title("https://twitter.com/old/status/20") == "Post by @old"
+
+
+def _parse(messages):
+    import json, os, tempfile
+    with tempfile.TemporaryDirectory() as t:
+        path = os.path.join(t, "2025-01-01.json")
+        with open(path, "w") as f:
+            json.dump(messages, f)
+        return parse_files([path])
+
+
+def test_damaged_messages_are_skipped_not_fatal():
+    parsed = _parse([
+        {"type": "message", "text": 5, "ts": "1"},
+        {"type": "message", "text": "", "ts": "2", "files": "nope"},
+        {"type": "message", "text": "", "ts": "3", "files": [None, {"name": None, "url_private": 5}]},
+        {"type": "message", "text": "<http://[bad> <https://a.org/paper>", "ts": "4"},
+    ])
+    assert [link["url"] for link in parsed[0]["links"]] == ["https://a.org/paper"]

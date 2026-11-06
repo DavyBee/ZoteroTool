@@ -152,11 +152,15 @@ def step_export(job: scan.Job | None) -> None:
 
     if st.button("Search for sources", type="primary",
                  disabled=not files or not zotero_ready()):
-        with tempfile.TemporaryDirectory() as tmp:
-            export = scan.read_export([(f.name, f.getvalue()) for f in files], tmp)
-            chosen = channel if channel is not None else next(iter(export.channels))
-            day_files = export.channels[chosen]
-            papers = scan.collect_papers(day_files, export.user_map)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                export = scan.read_export([(f.name, f.getvalue()) for f in files], tmp)
+                chosen = channel if channel is not None else next(iter(export.channels))
+                day_files = export.channels[chosen]
+                papers = scan.collect_papers(day_files, export.user_map)
+        except Exception as exc:
+            st.error(f"Could not read this export. {type(exc).__name__}: {exc}")
+            return
         if not papers:
             st.info("No links or documents found in this export.")
             return

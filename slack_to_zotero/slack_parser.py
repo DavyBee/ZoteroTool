@@ -229,7 +229,7 @@ def parse_files(filepaths: list[str],
             continue
         if not isinstance(messages, list):
             continue
-        messages = [m for m in messages if isinstance(m, dict)]
+        messages = [_sane(m) for m in messages if isinstance(m, dict)]
         loaded.append((path, messages))
         _absorb_user_profiles(messages, user_map)
 
@@ -332,6 +332,21 @@ def _group_threads(tagged: list[tuple[str, dict]]) -> list[list[tuple[str, dict]
     return out
 
 
+def _sane(msg: dict) -> dict:
+    """Make a message safe to read when an export has odd values (a
+    hand-edited or damaged file): text is a string, files a list of dicts."""
+    msg = dict(msg)
+    if not isinstance(msg.get("text"), str):
+        msg["text"] = ""
+    files = msg.get("files")
+    msg["files"] = [f for f in files if isinstance(f, dict)] if isinstance(files, list) else []
+    for f in msg["files"]:
+        for k in ("permalink", "url_private", "name"):
+            if not isinstance(f.get(k), (str, type(None))):
+                f[k] = None
+    return msg
+
+
 def _links_from_threads(threads, user_map) -> list[tuple[str, ThreadedLink]]:
     out: list[tuple[str, ThreadedLink]] = []
     for msgs in threads:
@@ -340,7 +355,10 @@ def _links_from_threads(threads, user_map) -> list[tuple[str, ThreadedLink]]:
             text = m.get("text") or ""
             hints = _workflow_hints(text)
             for match in URL_RE.finditer(text):
-                url = clean_url(match.group(1))
+                try:
+                    url = clean_url(match.group(1))
+                except ValueError:            # malformed, e.g. "http://[x"
+                    continue
                 if url not in found:
                     found[url] = (path, hints)
         if not found:

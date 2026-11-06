@@ -461,3 +461,11 @@ def test_items_edited_into_duplicates_upload_once():
     assert sorted(i["title"] for i in zot.created) == ["Paper 0", "Paper 1"]
     dup = next(p for p in job.papers if p["url"] == "https://a.org/2")
     assert dup["bucket"] == scan.EXISTING and not dup["include"]
+
+
+def test_damaged_saved_results_files_are_not_loaded():
+    assert scan.read_saved_results(b'{"slack_to_zotero_saved_results": 1}') is None
+    assert scan.read_saved_results(b'{"slack_to_zotero_saved_results": 1, "papers": "x"}') is None
+    papers, _ = scan.read_saved_results(
+        b'{"slack_to_zotero_saved_results": 1, "papers": [{"title": "no link"}, {"url": "https://a.org"}]}')
+    assert papers == [{"url": "https://a.org"}]
