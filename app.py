@@ -336,6 +336,15 @@ def _decided_table(label: str, items: list[dict], job: scan.Job, locked: bool,
         _item_table(job, items, f"t_{key}", locked, "decided")
 
 
+def _tables_have_unsaved_edits() -> bool:
+    """Whether a table has edited cells not yet saved (ticks don't count)."""
+    for key, state in st.session_state.items():
+        if isinstance(key, str) and key.startswith("t_") and isinstance(state, dict):
+            if any(set(change) - {"Select"} for change in state.get("edited_rows", {}).values()):
+                return True
+    return False
+
+
 def _bump_table() -> None:
     """New table keys after an action, so ticks can't carry over to other
     rows as items move between tables."""
@@ -619,8 +628,13 @@ def step_scan(job: scan.Job | None) -> None:
     uploaded_any = any(_status(p) for p in ready + review)
     locked = phase == scan.UPLOADING
 
+    # Changing the search redraws the tables, which would drop unsaved edits.
+    editing = _tables_have_unsaved_edits()
     query = st.text_input("Search results", placeholder="Title, author, journal, or link",
-                          key="results_query", type="search", live=True) or ""
+                          key="results_query", type="search", live=True,
+                          disabled=editing) or ""
+    if editing:
+        st.caption("Save or cancel the table edits to search.")
     # Uploaded items leave the Ready table; step 3 reports them.
     ready = [p for p in ready if not p.get("zotero_key")]
     shown_ready, shown_review = _matching(ready, query), _matching(review, query)

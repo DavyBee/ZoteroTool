@@ -394,3 +394,16 @@ def test_a_failed_search_can_be_tried_again():
     _buttons(at)["Try again"].click().run()
     _wait(scan.current_job(), scan.SCANNED)
     assert scan.current_job().items(scan.READY)[0]["title"] == "A Paper"
+
+
+def test_search_waits_while_a_table_has_unsaved_edits():
+    _scanned_job()
+    at = _page()
+    assert not at.text_input(key="results_query").disabled
+    at.session_state["t_left_0"] = {"edited_rows": {0: {"Select": True}}}
+    at.run()
+    assert not at.text_input(key="results_query").disabled       # ticks aren't edits
+    at.session_state["t_left_0"] = {"edited_rows": {0: {"Title": "New"}}}
+    at.run()
+    assert at.text_input(key="results_query").disabled
+    assert "Save or cancel the table edits to search." in _text(at)
