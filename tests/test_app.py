@@ -407,3 +407,56 @@ def test_search_waits_while_a_table_has_unsaved_edits():
     at.run()
     assert at.text_input(key="results_query").disabled
     assert "Save or cancel the table edits to search." in _text(at)
+
+
+@pytest.mark.parametrize("seed", range(3))
+def test_random_clicking_never_breaks_the_page(monkeypatch, seed):
+    """Click random enabled buttons (and switch views) hundreds of times, the
+    way an impatient person might. The page must never show an error, and
+    the results must stay consistent."""
+    import random
+
+    from slack_to_zotero import zotero_client
+
+    sent = []
+
+    def fake_upload(papers, zot, progress_cb=None, log_cb=None):
+        for p in papers:
+            sent.append(p["url"])
+            p["zotero_key"] = f"K{len(sent)}"
+        return {"uploaded": len(papers), "failed": 0, "errors": []}
+    monkeypatch.setattr(zotero_client, "upload_papers", fake_upload)
+    monkeypatch.setattr(zotero_client, "make_zotero_client", lambda: None)
+
+    def enrich(p, *a):
+        i = int(p["url"].rsplit("/", 1)[1])
+        if i % 3 == 0:
+            return {"metadata_source": "none"}
+        return {"metadata_source": "translator", "title": f"Paper {i}",
+                "authors": ["Doe, Jane"], "year": "2024"}
+    assert scan.start_job([{"url": f"https://a.org/{i}", "comments": []} for i in range(12)],
+                          None, enrich=enrich, title_search=lambda *a: None,
+                          source={"label": "export.zip"})
+    _wait(scan.current_job(), scan.SCANNED)
+
+    rnd = random.Random(seed)
+    at = _page()
+    for step in range(300):
+        job = scan.current_job()
+        if job is not None and job.snapshot()["phase"] in (scan.UPLOADING, scan.SCANNING):
+            _wait(job, scan.DONE if job.snapshot()["phase"] == scan.UPLOADING else scan.SCANNED)
+            at.run()
+        buttons = [b for b in at.button if not b.disabled]
+        radios = [r for r in at.radio if r.key == "review_view"]
+        if radios and rnd.random() < 0.1:
+            radios[0].set_value(rnd.choice(["Cards", "Table"])).run()
+        elif buttons:
+            rnd.choice(buttons).click().run()
+        else:
+            at.run()
+        assert not at.exception, (step, [e.value for e in at.exception])
+        if job is not None:
+            for p in job.papers:
+                if p.get("decision") == "removed":
+                    assert not p.get("include")
+    assert len(sent) == len(set(sent))                     # nothing uploaded twice
