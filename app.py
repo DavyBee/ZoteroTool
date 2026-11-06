@@ -80,14 +80,16 @@ def zotero_ready() -> bool:
 # Steps not reached yet are faded, with a line saying what they wait for.
 # Stop, Start over, Remove, and Clear results are red; Move to Review is orange. A
 # disabled button keeps Streamlit's grey.
-_RED = ["stop", "start_over", "stop_confirm", "card_remove", "t_ready_remove", "t_left_remove",
+_RED = ["edit_drop_*", "stop", "start_over", "stop_confirm", "card_remove", "t_ready_remove", "t_left_remove",
         "start_over_confirm", "new_search_confirm"]
 _ORANGE = ["t_ready_move"]
 
 
 def _button_color(keys: list[str], color: str, hover: str) -> str:
-    sel = ", ".join(f".st-key-{k} button:not(:disabled)" for k in keys)
-    hov = ", ".join(f".st-key-{k} button:not(:disabled):hover" for k in keys)
+    # A key ending in "*" matches every key starting with the rest.
+    box = [f'[class*="st-key-{k[:-1]}"]' if k.endswith("*") else f".st-key-{k}" for k in keys]
+    sel = ", ".join(f"{b} button:not(:disabled)" for b in box)
+    hov = ", ".join(f"{b} button:not(:disabled):hover" for b in box)
     return (f"{sel} {{ background-color: {color}; border-color: {color}; color: #fff; }}\n"
             f"{hov} {{ background-color: {hover}; border-color: {hover}; color: #fff; }}\n")
 
@@ -439,7 +441,7 @@ def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
             "Link": st.column_config.LinkColumn(display_text="Open", width=50, pinned=True),
             "Status": st.column_config.TextColumn(width=90),
             "Reason": st.column_config.TextColumn(width=170),
-            "Title": st.column_config.TextColumn(width="medium" if mode != "ready" else "large"),
+            "Title": st.column_config.TextColumn(width=400 if mode != "ready" else 500),
             "Authors": st.column_config.TextColumn(width=180, help="Last, First; Last, First"),
             "Year": st.column_config.TextColumn(width=70),
             "Journal": st.column_config.TextColumn(width=150),
