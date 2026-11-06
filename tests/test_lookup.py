@@ -8,8 +8,8 @@ import types
 
 import pytest
 
-import http_fetch
-import metadata
+from slack_to_zotero import http_fetch
+from slack_to_zotero import metadata
 
 
 @pytest.fixture(autouse=True)

@@ -2,30 +2,22 @@
 
 from __future__ import annotations
 
-import os
 import sys
 import time
 
 import pytest
 from streamlit.testing.v1 import AppTest
 
-import scan
+from slack_to_zotero import code_stamp
 
-
-LOCAL_MODULES = ("records", "config", "http_fetch", "slack_parser", "pdf_storage",
-                 "zotero_index", "metadata", "zotero_client", "scan")
-
-
-def _code_stamp():
-    here = os.path.dirname(os.path.abspath(__file__))
-    return tuple(os.path.getmtime(os.path.join(here, f"{m}.py")) for m in LOCAL_MODULES)
+from slack_to_zotero import scan
 
 
 @pytest.fixture(autouse=True)
 def env(monkeypatch):
     # The modules these tests imported are current, so the page should use them.
-    monkeypatch.setattr(sys, "_slack_to_zotero_code", _code_stamp(), raising=False)
-    import zotero_client
+    monkeypatch.setattr(sys, "_slack_to_zotero_code", code_stamp(), raising=False)
+    from slack_to_zotero import zotero_client
     monkeypatch.setattr(zotero_client, "library_label", lambda: "Lab Library (group 1)")
     monkeypatch.setattr(zotero_client, "collection_label", lambda: "Testing (ABC123)")
     monkeypatch.setenv("ZOTERO_API_KEY", "test")
@@ -60,7 +52,7 @@ def _scanned_job():
 
 
 def _page():
-    return AppTest.from_file("app.py", default_timeout=30).run()
+    return AppTest.from_file("../app.py", default_timeout=30).run()
 
 
 def _buttons(at):
@@ -144,7 +136,7 @@ def test_no_emoji_in_page_text():
 
 
 def test_changed_code_is_loaded_fresh(monkeypatch):
-    saved = {m: sys.modules[m] for m in LOCAL_MODULES if m in sys.modules}
+    saved = {m: mod for m, mod in sys.modules.items() if m.split(".")[0] == "slack_to_zotero"}
     stopped = []
 
     class RunningJob:
@@ -156,9 +148,9 @@ def test_changed_code_is_loaded_fresh(monkeypatch):
         monkeypatch.setattr(sys, "_slack_to_zotero_code", ("old",), raising=False)
         at = _page()
         assert not at.exception
-        assert sys.modules["scan"] is not saved["scan"]      # imported again
+        assert sys.modules["slack_to_zotero.scan"] is not saved["slack_to_zotero.scan"]  # imported again
         assert stopped == [True]                             # the old scan was stopped
-        assert sys._slack_to_zotero_code == _code_stamp()
+        assert sys._slack_to_zotero_code == code_stamp()
     finally:
         sys.modules.update(saved)
 

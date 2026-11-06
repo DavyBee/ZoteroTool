@@ -25,8 +25,8 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urljoin
 
-import config
-import http_fetch
+from . import config
+from . import http_fetch
 
 
 # ── Public entry point ────────────────────────────────────────────────────────

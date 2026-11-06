@@ -15,10 +15,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import config  # noqa: E402
-import scan  # noqa: E402
-import zotero_client  # noqa: E402
-import zotero_index  # noqa: E402
+from slack_to_zotero import config  # noqa: E402
+from slack_to_zotero import scan  # noqa: E402
+from slack_to_zotero import zotero_client  # noqa: E402
+from slack_to_zotero import zotero_index  # noqa: E402
 
 
 def main(export_path: str, out_path: str) -> None:

@@ -23,10 +23,10 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, Optional
 
-import metadata
-import slack_parser
-from records import new_paper, normalize_url
-from zotero_index import (PUBLISHED_TYPES, WORKING_PAPER_TYPES, LibraryIndex,
+from . import metadata
+from . import slack_parser
+from .records import new_paper, normalize_url
+from .zotero_index import (PUBLISHED_TYPES, WORKING_PAPER_TYPES, LibraryIndex,
                           different_versions, doi_key, title_key, titles_match,
                           year_of)
 
@@ -487,7 +487,7 @@ class Job:
             self.total, self.done = len(papers), 0
             self.log.clear()
         if upload is None:
-            import zotero_client
+            from . import zotero_client
             upload = zotero_client.upload_papers
         self._thread = threading.Thread(
             target=self._run_upload, args=(papers, make_client, upload), daemon=True)

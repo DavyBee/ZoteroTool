@@ -17,8 +17,8 @@ import os
 
 import pytest
 
-import slack_parser
-from slack_parser import clean_url, parse_files, parse_workflow_post
+from slack_to_zotero import slack_parser
+from slack_to_zotero.slack_parser import clean_url, parse_files, parse_workflow_post
 
 
 def _write(tmp_path, name, messages):

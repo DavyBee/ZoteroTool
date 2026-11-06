@@ -13,8 +13,8 @@ import pathlib
 
 import pytest
 
-import http_fetch
-import metadata
+from slack_to_zotero import http_fetch
+from slack_to_zotero import metadata
 
 pytestmark = pytest.mark.live
 
@@ -65,7 +65,7 @@ def test_citoid():
 # Python, which may break them. This fails six months ahead as a reminder.
 
 def test_python_version_is_not_near_end_of_life():
-    version = (pathlib.Path(__file__).parent / ".python-version").read_text().strip()
+    version = (pathlib.Path(__file__).parent.parent / ".python-version").read_text().strip()
     minor = int(version.split(".")[1])
     end_of_life = datetime.date(2016 + minor, 10, 1)
     warn_from = end_of_life - datetime.timedelta(days=183)
