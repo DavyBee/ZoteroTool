@@ -4,7 +4,8 @@ again without searching (upload the saved file in step 1). For testing.
 
     .venv/bin/python tools/save_search.py EXPORT.zip OUT.json
 
-Uses the keys in .streamlit/secrets.toml. The saved file holds Slack
+Uses the Anthropic key in .streamlit/secrets.toml. Zotero isn't checked
+while saving, so every item is looked up. The saved file holds Slack
 messages and names: keep it out of the repository.
 """
 
@@ -17,8 +18,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from slack_to_zotero import config  # noqa: E402
 from slack_to_zotero import scan  # noqa: E402
-from slack_to_zotero import zotero_client  # noqa: E402
-from slack_to_zotero import zotero_index  # noqa: E402
 
 
 def main(export_path: str, out_path: str) -> None:
@@ -27,10 +26,9 @@ def main(export_path: str, out_path: str) -> None:
         day_files = next(iter(export.channels.values()))
         papers = scan.collect_papers(day_files, export.user_map)
     print(f"{len(papers)} links and documents")
-    job = scan.Job(papers, config.anthropic_api_key(), str(config.LLM_AUDIT_PATH),
-                   load_index=lambda: zotero_index.load(
-                       zotero_client.make_zotero_client(), config.zotero_library_type(),
-                       config.zotero_library_id(), config.zotero_collection_key()))
+    # No Zotero check: every item is looked up, so the file has full details
+    # whatever is in the library now. Loading the file checks Zotero then.
+    job = scan.Job(papers, config.anthropic_api_key(), str(config.LLM_AUDIT_PATH))
     job.start()
     while job.snapshot()["phase"] == scan.SCANNING:
         snap = job.snapshot()
