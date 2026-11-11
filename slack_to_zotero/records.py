@@ -27,7 +27,7 @@ class Paper(TypedDict, total=False):
     title: Optional[str]
     authors: list[str]               # "Last, First" or a single name
     abstract: Optional[str]
-    year: Optional[str]
+    date: Optional[str]             # "YYYY-MM-DD", "YYYY-MM", "YYYY", or as typed
     journal: Optional[str]           # venue: journal, institution, repository, ...
     item_type: str                   # Zotero item type
     volume: Optional[str]

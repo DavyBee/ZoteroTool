@@ -26,6 +26,7 @@ from pyzotero import zotero
 from . import config
 from . import pdf_storage
 from .records import Paper
+from .zotero_index import year_of
 
 
 BATCH_SIZE = 50          # Zotero API hard limit per create_items call
@@ -297,7 +298,7 @@ def _file_name(paper: dict, path: str) -> str:
     first = authors[0].split(",")[0].strip() if authors else ""
     def safe(text: str) -> str:                # letters, digits, spaces, hyphens
         return re.sub(r"[^\w\s\-]", "", text or "").strip()
-    parts = " ".join(x for x in (safe(first)[:40], safe(paper.get("year") or "")) if x)
+    parts = " ".join(x for x in (safe(first)[:40], safe(year_of(paper.get("date")) or "")) if x)
     title = safe(paper.get("title") or "")[:80].strip()
     name = " - ".join(x for x in (parts, title) if x) or "Full Text"
     return re.sub(r"\s+", " ", name) + ext
@@ -399,8 +400,8 @@ def paper_to_zotero_item(paper: Paper) -> dict:
     if coll_key:
         item["collections"] = [coll_key]
 
-    if paper.get("year"):
-        item["date"] = paper["year"]
+    if paper.get("date"):
+        item["date"] = paper["date"]
 
     if paper.get("doi"):
         item["DOI"] = paper["doi"]

@@ -342,8 +342,12 @@ def _stop_editing() -> None:
     st.session_state.pop("editing_url", None)
     # The author boxes too, so a later edit starts from the saved names.
     for key in [k for k in st.session_state
-                if str(k).startswith(("edit_rows_", "edit_next_", "edit_first_", "edit_last_"))]:
+                if str(k).startswith(("edit_rows_", "edit_next_", "edit_first_", "edit_last_",
+                                      "edit_pdf_drop_"))]:
         del st.session_state[key]
+    st.session_state.pop("pdf_error", None)
+    # A new key empties the PDF box for the next edit.
+    st.session_state.pdf_pick = st.session_state.get("pdf_pick", 0) + 1
 
 
 def _start_editing(url: str) -> None:
@@ -353,10 +357,20 @@ def _start_editing(url: str) -> None:
 def _save_card(job: scan.Job, p: dict) -> None:
     k = zlib.crc32(p["url"].encode())
     get = lambda name: (st.session_state.get(f"edit_{name}_{k}") or "").strip()
+    picked = st.session_state.get(_pdf_key(k))
+    if picked is not None:
+        try:
+            path, size = pdf_storage.save_attached_pdf(picked.getvalue())
+        except ValueError as exc:
+            st.session_state.pdf_error = str(exc)      # stay in edit; nothing saved
+            return
+        job.attach_pdf(p["url"], path, size, picked.name)
+    elif st.session_state.get(f"edit_pdf_drop_{k}"):
+        job.attach_pdf(p["url"], None)
     job.edit(p["url"], {
         "title": get("title") or None,
         "authors": _typed_authors(k),
-        "year": get("year") or None,
+        "date": get("date") or None,
         "item_type": st.session_state.get(f"edit_type_{k}") or p.get("item_type"),
         "journal": get("journal") or None})
     _bump_table()
@@ -428,7 +442,7 @@ def ready_items(ready: list[dict], review: list[dict]) -> list[dict]:
 def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
                 mode: str, show_status: bool = False) -> None:
     """Items as an editable table: tick rows in the first column, then act on
-    them with the buttons below. Title, authors, year, and journal can be
+    them with the buttons below. Title, authors, date, and journal can be
     changed in place and are kept with Save edits. `mode` is "ready",
     "left" (to review), or "decided" (removed)."""
     rows = []
@@ -440,7 +454,7 @@ def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
             row["Reason"] = p.get("reason", "")
         row.update({"Title": p.get("title") or p.get("slack_file_name") or "",
                     "Authors": "; ".join(p.get("authors") or []),
-                    "Year": p.get("year") or "", "Journal": p.get("journal") or ""})
+                    "Date": p.get("date") or "", "Journal": p.get("journal") or ""})
         if mode != "ready":
             row["Summary"] = p.get("summary") or ""
         else:
@@ -465,7 +479,7 @@ def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
             "Authors": st.column_config.TextColumn("Authors (Last, First; Last, First; ...)",
                                                    width=320 if ready else 240,
                                                    help="Separate authors with semicolons"),
-            "Year": st.column_config.TextColumn(width=55),
+            "Date": st.column_config.TextColumn(width=95, help="2024, 2024-03, or 2024-03-15"),
             "Journal": st.column_config.TextColumn(width=170),
             "Summary": st.column_config.TextColumn(width=240),
             "Added by": st.column_config.TextColumn(width=75),
@@ -530,8 +544,8 @@ def apply_review_edits(job: scan.Job, urls: list[str], edited_rows: dict) -> Non
             fields["title"] = change["Title"].strip() or None
         if "Authors" in change:
             fields["authors"] = [a.strip() for a in change["Authors"].split(";") if a.strip()]
-        if "Year" in change:
-            fields["year"] = change["Year"].strip() or None
+        if "Date" in change:
+            fields["date"] = change["Date"].strip() or None
         if "Journal" in change:
             fields["journal"] = change["Journal"].strip() or None
         if fields:
@@ -575,7 +589,7 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
             lines = [
                 _field("Title", p.get("title") or p.get("slack_file_name")),
                 _field("Authors", _all_authors(p.get("authors") or [])),
-                _field("Year", p.get("year")),
+                _field("Date", p.get("date")),
                 _field("Website" if p.get("item_type") == "webpage" else "Journal",
                        p.get("journal") or (scan.site_name(p["url"])
                                             if p.get("item_type") == "webpage" else None)),
@@ -595,12 +609,11 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
             else:
                 body = "*(No message)*"
             lines.append(f"**Original Slack message:** {body}")
-        if p.get("local_pdf_path") and not p.get("attached_pdf_name"):
-            lines.append("**PDF:** Found by the search")
+        if not editing and p.get("local_pdf_path"):
+            lines.append(f"**PDF:** {_md(p['attached_pdf_name'])}" if p.get("attached_pdf_name")
+                         else "**PDF:** Found by the search")
         # One block with line breaks keeps the card compact.
         st.markdown("  \n".join(lines))
-        if not editing:
-            _pdf_control(job, p, frozen)
 
         actions = st.container(horizontal=True)
         if editing:
@@ -617,38 +630,24 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
                        on_click=_decide, args=(job, items, i, "removed"))
 
 
-def _pdf_control(job: scan.Job, p: dict, frozen: bool) -> None:
-    """The PDF a person attached, with Remove, or a box to attach one."""
-    if p.get("attached_pdf_name"):
+def _pdf_key(k: int) -> str:
+    return f"edit_pdf_{k}_{st.session_state.get('pdf_pick', 0)}"
+
+
+def _pdf_edit(p: dict, k: int) -> None:
+    """In Edit: the attached PDF with Remove, or a box to attach one. Like
+    the other fields, it changes only on Save edits."""
+    if p.get("attached_pdf_name") and not st.session_state.get(f"edit_pdf_drop_{k}"):
         row = st.container(horizontal=True, vertical_alignment="center")
         row.markdown(f"**PDF:** {_md(p['attached_pdf_name'])}")
-        row.button("Remove PDF", disabled=frozen, key="card_pdf_remove",
-                   on_click=job.attach_pdf, args=(p["url"], None))
-        return
-    if frozen:
-        return
-    # A new key after each pick empties the box again.
-    key = f"card_pdf_{zlib.crc32(p['url'].encode())}_{st.session_state.get('pdf_pick', 0)}"
-    label = "Replace the PDF" if p.get("local_pdf_path") else "Attach a PDF"
-    st.file_uploader(label, type=["pdf"], key=key,
-                     on_change=_attach_pdf, args=(job, p["url"], key))
-    error = st.session_state.get("pdf_error")
-    if error and error[0] == p["url"]:
-        st.error(error[1])
-
-
-def _attach_pdf(job: scan.Job, url: str, key: str) -> None:
-    picked = st.session_state.get(key)
-    if picked is None:
-        return
-    st.session_state.pdf_pick = st.session_state.get("pdf_pick", 0) + 1
-    try:
-        path, size = pdf_storage.save_attached_pdf(picked.getvalue())
-    except ValueError as exc:
-        st.session_state.pdf_error = (url, str(exc))
-        return
-    st.session_state.pop("pdf_error", None)
-    job.attach_pdf(url, path, size, picked.name)
+        row.button("Remove PDF", key=f"edit_pdf_remove_{k}",
+                   on_click=st.session_state.__setitem__, args=(f"edit_pdf_drop_{k}", True))
+    else:
+        found = p.get("local_pdf_path") and not p.get("attached_pdf_name")
+        st.file_uploader("**Replace the PDF found by the search**" if found else "**Attach a PDF**",
+                         type=["pdf"], key=_pdf_key(k))
+    if st.session_state.get("pdf_error"):
+        st.error(st.session_state.pdf_error)
 
 
 def _edit_fields(p: dict) -> dict:
@@ -658,15 +657,17 @@ def _edit_fields(p: dict) -> dict:
                           key=f"edit_title_{k}")
     _author_rows(p, k)
     c1, c2, c3 = st.columns([1, 2, 3])
-    year = c1.text_input("**Year**", value=p.get("year") or "", key=f"edit_year_{k}")
+    date = c1.text_input("**Date**", value=p.get("date") or "", key=f"edit_date_{k}",
+                         help="2024, 2024-03, or 2024-03-15")
     kind = p.get("item_type") if p.get("item_type") in _ITEM_TYPES else "journalArticle"
     item_type = c2.selectbox("**Type**", _ITEM_TYPES, index=_ITEM_TYPES.index(kind),
                              key=f"edit_type_{k}")
     journal = c3.text_input("**Journal or website**", value=p.get("journal") or "",
                             key=f"edit_journal_{k}")
+    _pdf_edit(p, k)
     return {"title": title.strip() or None,
             "authors": _typed_authors(k),
-            "year": year.strip() or None, "item_type": item_type,
+            "date": date.strip() or None, "item_type": item_type,
             "journal": journal.strip() or None}
 
 

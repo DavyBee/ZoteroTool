@@ -74,8 +74,8 @@ def test_match_identifiers(index, paper, expected):
 
 def test_title_needs_matching_year_or_author(index):
     base = {"url": "https://other.org", "title": "The rent is too high"}
-    assert index.match({**base, "year": "2021"}) == ("TY", "Title")
-    assert index.match({**base, "year": "2019"}) is None
+    assert index.match({**base, "date": "2021"}) == ("TY", "Title")
+    assert index.match({**base, "date": "2019"}) is None
     assert index.match({**base, "authors": ["Smith, A"]}) == ("TY", "Title")
     assert index.match({**base, "authors": ["Jones, B"]}) is None
     assert index.match(base) == ("TY", "Title")        # no year or authors: a thin record
@@ -160,7 +160,7 @@ def test_known_items_skip_enrichment_and_show_as_existing(index):
     def enrich(p, *a):
         called.append(p["url"])
         return {"metadata_source": "crossref_doi", "title": "The Rent Is Too High",
-                "year": "2021"}
+                "date": "2021"}
 
     job = _job([{"url": "https://nber.org/papers/w1", "comments": []},
                 {"url": "https://new.org/rent", "comments": []},
@@ -260,7 +260,7 @@ def test_hint_title_is_searched_on_crossref_when_nothing_found():
     def search(title, author=None):
         calls.append((title, author))
         return ("crossref_doi", {"title": "Where the Landlords Are: A Network Approach",
-                                 "doi": "10.1/x", "year": "2024"})
+                                 "doi": "10.1/x", "date": "2024"})
 
     p = _hinted({"metadata_source": "needs_manual"}, search)
     assert calls == [("Where the Landlords Are", "Preis")]
@@ -291,7 +291,7 @@ def test_existing_items_show_the_zotero_title():
 
 def test_file_name_is_readable_and_has_no_directory():
     name = zotero_client._file_name(
-        {"title": "Where is it? A/B Test", "authors": ["Diamond, Rebecca"], "year": "2021"},
+        {"title": "Where is it? A/B Test", "authors": ["Diamond, Rebecca"], "date": "2021"},
         "/tmp/pdfs/abc123.pdf")
     assert name == "Diamond 2021 - Where is it AB Test.pdf"
     assert zotero_client._file_name({}, "x/y.docx") == "Full Text.docx"
@@ -424,7 +424,7 @@ def test_identical_title_matches_when_the_year_is_missing_and_details_are_thin()
     assert ix.match({"url": "https://y", "title": "Where Is the Housing Shortage?"}) == ("S", "Title")
     # Different known years stay separate versions
     assert ix.match({"url": "https://z", "title": "Rent Guarantee Insurance Effects",
-                     "year": "2019", "authors": ["Abramson, B"]}) is None
+                     "date": "2019", "authors": ["Abramson, B"]}) is None
     # A short title with a different author and no year doesn't match
     assert ix.match({"url": "https://w", "title": "Rent Guarantee Insurance Effects",
                      "authors": ["Smith, A"]}) is None
@@ -437,20 +437,20 @@ def test_journal_articles_a_year_apart_match_but_working_papers_dont():
     ix.add(item("W", itemType="report", title="What Works and for Whom in School Capital",
                 date="2024", creators=[{"lastName": "Biasi"}]))
     assert ix.match({"url": "https://x", "title": "Where Is the Housing Shortage?",
-                     "year": "2024", "authors": ["McClure, K"],
+                     "date": "2024", "authors": ["McClure, K"],
                      "item_type": "journalArticle"}) == ("A", "Title")
     assert ix.match({"url": "https://y", "title": "What Works and for Whom in School Capital",
-                     "year": "2025", "authors": ["Biasi, B"],
+                     "date": "2025", "authors": ["Biasi, B"],
                      "item_type": "journalArticle"}) is None
 
 
 def test_working_paper_and_article_stay_separate_and_the_paper_is_labelled():
     meta = {
-        "https://nber.org/w1": {"title": "Rent Guarantee Insurance", "year": "2024",
+        "https://nber.org/w1": {"title": "Rent Guarantee Insurance", "date": "2024",
                                 "authors": ["Abramson, B"], "item_type": "report"},
-        "https://journal.org/a": {"title": "Rent Guarantee Insurance", "year": "2024",
+        "https://journal.org/a": {"title": "Rent Guarantee Insurance", "date": "2024",
                                   "authors": ["Abramson, B"], "item_type": "journalArticle"},
-        "https://ucla.edu/other": {"title": "An Unrelated Report", "year": "2024",
+        "https://ucla.edu/other": {"title": "An Unrelated Report", "date": "2024",
                                    "authors": ["Doe, J"], "item_type": "report"},
     }
     job = _job([{"url": u, "comments": []} for u in meta],
@@ -467,7 +467,7 @@ def test_published_version_in_zotero_labels_the_new_working_paper():
     job = _job([{"url": "https://nber.org/w26139", "comments": []}],
                lambda p, *a: {"metadata_source": "crossref_doi", "item_type": "report",
                               "title": "Eviction and Poverty in American Cities",
-                              "year": "2024", "authors": ["Collinson, R"]}, ix)
+                              "date": "2024", "authors": ["Collinson, R"]}, ix)
     [p] = job.papers
     assert p["bucket"] == scan.READY                       # not treated as the article
     assert p["title"] == "Eviction and Poverty in American Cities (working paper)"
@@ -480,7 +480,12 @@ def test_working_paper_in_zotero_does_not_hide_the_new_article():
     job = _job([{"url": "https://qje.org/a", "comments": []}],
                lambda p, *a: {"metadata_source": "crossref_doi", "item_type": "journalArticle",
                               "title": "Eviction and Poverty in American Cities",
-                              "year": "2024", "authors": ["Collinson, R"]}, ix)
+                              "date": "2024", "authors": ["Collinson, R"]}, ix)
     [p] = job.papers
     assert p["bucket"] == scan.READY
     assert p["title"] == "Eviction and Poverty in American Cities"
+
+
+def test_a_full_date_matches_the_same_year_in_zotero(index):
+    base = {"title": "Title", "item_type": "journalArticle"}
+    assert index.match({**base, "date": "2021-05-04"}) == index.match({**base, "date": "2021"})

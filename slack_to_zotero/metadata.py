@@ -224,10 +224,9 @@ def tags_to_fields(tags: dict[str, list[str]]) -> Optional[dict]:
     first, last = one("citation_firstpage"), one("citation_lastpage")
     date = one("citation_publication_date", "citation_date", "citation_online_date",
                "citation_cover_date", "citation_year")
-    year = re.search(r"\b(1[5-9]\d\d|20\d\d)\b", date or "")
     return {
         "title": clean_title(title), "authors": authors, "item_type": item_type, "journal": venue,
-        "year": year.group(1) if year else None,
+        "date": clean_date(date),
         "volume": one("citation_volume"), "issue": one("citation_issue"),
         "pages": f"{first}-{last}" if first and last else first,
         "publisher": one("citation_publisher"), "isbn": one("citation_isbn"),
@@ -453,8 +452,6 @@ def _is_translator_junk(raw: dict, url: str = "") -> bool:
 
 def translator_to_fields(raw: dict) -> dict:
     """Convert a translation-server (Zotero-native) item into our flat field dict."""
-    year_raw = raw.get("date") or ""
-    year = year_raw[:4] if year_raw[:4].isdigit() else None
     journal = (raw.get("publicationTitle") or raw.get("websiteTitle")
                or raw.get("bookTitle") or raw.get("publisher")
                or raw.get("institution") or raw.get("repository"))
@@ -465,7 +462,7 @@ def translator_to_fields(raw: dict) -> dict:
         "title":      clean_title(raw.get("title")),
         "authors":    _translator_creators(raw),
         "abstract":   raw.get("abstractNote"),
-        "year":       year,
+        "date":       clean_date(raw.get("date")),
         "journal":    journal,
         "item_type":  raw.get("itemType", "journalArticle"),
         "keywords":   [t["tag"] for t in (raw.get("tags") or []) if t.get("tag")],
@@ -569,7 +566,7 @@ def crossref_to_fields(data: dict) -> dict:
         "title":      clean_title(title_list[0]) if title_list else None,
         "authors":    _crossref_authors(data),
         "abstract":   abstract,
-        "year":       _crossref_year(data),
+        "date":       _crossref_date(data),
         "journal":    venue,
         "item_type":  item_type,
         "volume":     data.get("volume"),
@@ -607,17 +604,73 @@ def _crossref_authors(data: dict) -> list[str]:
     return out
 
 
-def _crossref_year(data: dict) -> Optional[str]:
+def _crossref_date(data: dict) -> Optional[str]:
     for f in ("published-print", "published-online", "created"):
         parts = (data.get(f) or {}).get("date-parts") or [[]]
-        if parts and parts[0]:
-            return str(parts[0][0])
+        if parts and parts[0] and parts[0][0]:
+            return clean_date(parts[0])
     return None
+
+
+# ── Dates ─────────────────────────────────────────────────────────────────────
+
+_MONTH_RE = re.compile(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?(?![a-z])", re.I)
+_MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+_YEAR_RE = re.compile(r"\b(1[5-9]\d\d|20\d\d)\b")
+
+
+def _iso(year, month=None, day=None) -> Optional[str]:
+    """'YYYY-MM-DD', 'YYYY-MM' or 'YYYY': as much as is a real date."""
+    def num(x):
+        try:
+            return int(x)
+        except (TypeError, ValueError):
+            return None
+    y, m, d = num(year), num(month), num(day)
+    if y is None or not 1500 <= y <= 2099:
+        return None
+    if m is None or not 1 <= m <= 12:
+        return f"{y}"
+    try:
+        datetime(y, m, d or 1)
+    except ValueError:
+        return f"{y}-{m:02d}"
+    return f"{y}-{m:02d}-{d:02d}" if d else f"{y}-{m:02d}"
+
+
+def clean_date(value) -> Optional[str]:
+    """A publication date as 'YYYY-MM-DD', 'YYYY-MM' or 'YYYY', as precise as
+    `value` allows. Takes CrossRef's [2024, 3, 15], ISO text ("2024-03-15",
+    "2024/03", "2024-03-15T10:00Z"), and written dates ("March 15, 2024",
+    "15 Mar 2024", "Mar 2024"). Anything else gives only its year, so a date
+    that can't be read is never worse than the year alone. Numeric dates like
+    "05/03/2024" are ambiguous (May or March) and give just the year."""
+    if isinstance(value, (list, tuple)):
+        parts = [p for p in value[:3]]
+        while parts and parts[-1] in (None, ""):
+            parts.pop()
+        return _iso(*parts) if parts else None
+    if isinstance(value, bool) or value is None:
+        return None
+    text = str(value).strip()
+    m = re.match(r"(\d{4})(?:[-/.](\d{1,2})(?:[-/.](\d{1,2}))?)?(?!\d)", text)
+    if m:
+        return _iso(*[g for g in m.groups() if g is not None])
+    year = _YEAR_RE.search(text)
+    if not year:
+        return None
+    month = _MONTH_RE.search(text)
+    if not month:
+        return year.group(1)
+    rest = (text[:year.start()] + " " + text[year.end():]).replace(month.group(0), " ")
+    day = re.search(r"\b(\d{1,2})(?:st|nd|rd|th)?\b", rest)
+    return _iso(year.group(1), _MONTHS.index(month.group(1).lower()) + 1,
+                day.group(1) if day else None)
 
 
 # ── LLM fallback ──────────────────────────────────────────────────────────────
 
-_LLM_REQUIRED_KEYS = {"title", "authors", "year", "item_type"}
+_LLM_REQUIRED_KEYS = {"title", "authors", "item_type"}   # and "date" (or "year")
 
 # With less page text than this, the AI is mostly guessing from the link and the
 # Slack messages, so the item goes to Review ("Page could not be accessed").
@@ -674,12 +727,14 @@ def fetch_llm(url: str, comments: list[Comment],
     prompt = (
         "Extract publication metadata from the information below.\n"
         "Return ONLY valid JSON with these exact keys (use null or [] for unknowns):\n"
-        '{"title":null,"authors":[],"abstract":null,"year":null,"journal":null,'
+        '{"title":null,"authors":[],"abstract":null,"date":null,"journal":null,'
         '"item_type":"journalArticle","doi":null,"volume":null,"issue":null,'
         '"pages":null,"keywords":[],"summary":null,"category":"paper"}\n\n'
         "item_type must be one of: journalArticle, preprint, report, book, "
         "bookSection, conferencePaper, thesis, blogPost, webpage\n"
-        "authors should be ['Last, First', ...].\n\n"
+        "authors should be ['Last, First', ...].\n"
+        "date is the publication date, as precise as the source shows it: "
+        "'YYYY-MM-DD', 'YYYY-MM', or 'YYYY'. Never guess a month or day.\n\n"
         "The page often lists other works too — reference lists, 'related "
         "articles', 'cited by' entries, or recommendations. Extract the "
         "metadata for the ONE central article the page is primarily about: its "
@@ -896,22 +951,22 @@ def _is_valid_llm_response(parsed) -> bool:
     AI found nothing citable, which enrich_paper handles."""
     if not isinstance(parsed, dict):
         return False
-    return _LLM_REQUIRED_KEYS.issubset(parsed.keys())
+    return _LLM_REQUIRED_KEYS.issubset(parsed.keys()) and bool({"date", "year"} & parsed.keys())
 
 
 def _is_useful_partial(out: dict) -> bool:
     """
-    Whether an AI result with no title still identifies the work. A year or a
+    Whether an AI result with no title still identifies the work. A date or a
     journal alone doesn't: thousands of articles share them.
 
     A useful partial requires:
       - a DOI (Zotero will resolve it to full metadata on upload), OR
-      - authors AND year AND journal all present (manually findable later).
+      - authors AND date AND journal all present (manually findable later).
     """
     if out.get("doi"):
         return True
     authors = out.get("authors") or []
-    return bool(authors and out.get("year") and out.get("journal"))
+    return bool(authors and out.get("date") and out.get("journal"))
 
 
 def _llm_to_fields(d: dict) -> dict:
@@ -922,7 +977,8 @@ def _llm_to_fields(d: dict) -> dict:
         "title":        clean_title(d.get("title")),
         "authors":      d.get("authors") or [],
         "abstract":     d.get("abstract"),
-        "year":         str(d["year"]) if d.get("year") else None,
+        # "year": what older models (or a reply in the old format) send.
+        "date":         clean_date(d.get("date") or d.get("year")),
         "journal":      d.get("journal"),
         "item_type":    d.get("item_type") or "journalArticle",
         "keywords":     d.get("keywords") or [],
@@ -962,7 +1018,7 @@ def enrich_paper(paper: dict, anthropic_key: Optional[str] = None,
         fields["title"] = tweet_title(url)
         day = tweet_date(url)
         if day:
-            fields["year"] = str(day.year)
+            fields["date"] = day.isoformat()
         return fields
 
     # A link to another Slack message is a reference within Slack, not a source.

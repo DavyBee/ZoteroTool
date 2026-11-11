@@ -45,7 +45,7 @@ def test_tags_from_an_arxiv_style_page():
     f = metadata.tags_to_fields(tags)
     assert f["title"].startswith("Beyond Eviction Prediction")
     assert f["authors"] == ["Tegan, Mohan", "de Chaisemartin, Clément"]
-    assert (f["item_type"], f["journal"], f["year"]) == ("preprint", "arXiv", "2024")
+    assert (f["item_type"], f["journal"], f["date"]) == ("preprint", "arXiv", "2024-01-29")
     assert f["abstract"] == "We study & predict evictions."
     assert f["doi"] is None
 
@@ -207,7 +207,7 @@ def _fake_anthropic(monkeypatch, content, stop_reason="end_turn"):
     return sent
 
 
-REPLY = ('{"title": "T", "authors": ["Doe, Jane"], "year": "2024", "journal": null, '
+REPLY = ('{"title": "T", "authors": ["Doe, Jane"], "date": "2024", "journal": null, '
          '"doi": null, "item_type": "journalArticle", "category": "paper", "summary": "s"}')
 
 
@@ -344,3 +344,35 @@ def test_a_rejected_anthropic_key_stops_further_ai_calls(monkeypatch, tmp_path):
         assert metadata.fetch_llm("https://a.org/x", [], "bad-key", log, page_text="text") is None
     assert len(calls) == 1
     assert "rejected" in metadata.llm_problem
+
+
+# ── Dates ────────────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("raw, want", [
+    ([2024, 3, 15], "2024-03-15"), ([2024, 3], "2024-03"), ([2024], "2024"),
+    ([2024, None], "2024"), ([None], None),
+    ("2024-03-15", "2024-03-15"), ("2024/3/5", "2024-03-05"), ("2024-03", "2024-03"),
+    ("2024-03-15T10:00:00Z", "2024-03-15"), ("2024", "2024"), (2024, "2024"),
+    ("March 15, 2024", "2024-03-15"), ("15 Mar. 2024", "2024-03-15"),
+    ("Sept 2024", "2024-09"), ("May 2024", "2024-05"),
+    ("Spring 2024", "2024"),                 # no month: the year only
+    ("05/03/2024", "2024"),                  # May or March? the year only
+    ("2024-13-01", "2024"), ("2024-02-30", "2024-02"),   # impossible parts dropped
+    ("20240315", None), ("", None), (None, None), ("no date", None),
+])
+def test_dates_are_kept_as_precisely_as_the_source_gives_them(raw, want):
+    assert metadata.clean_date(raw) == want
+
+
+def test_crossref_keeps_the_full_published_date():
+    f = metadata._crossref_date({"published-print": {"date-parts": [[2023, 7]]},
+                                 "published-online": {"date-parts": [[2023, 6, 2]]}})
+    assert f == "2023-07"            # print first, as before; only the precision changed
+
+
+def test_an_ai_reply_with_year_instead_of_date_still_works(monkeypatch, tmp_path):
+    old = REPLY.replace('"date": "2024"', '"year": 2024')
+    _fake_anthropic(monkeypatch, [_Block("text", old)])
+    out = metadata.fetch_llm("https://a.org", [], "key", str(tmp_path / "audit.jsonl"),
+                             page_text="some page text " * 50)
+    assert out is not None and metadata._llm_to_fields(out)["date"] == "2024"

@@ -40,7 +40,7 @@ def _scanned_job():
         if p["url"].endswith("junk"):
             return {"metadata_source": "non_paper"}
         return {"metadata_source": "crossref_doi", "title": "A Paper",
-                "authors": ["Doe, Jane"], "year": "2024"}
+                "authors": ["Doe, Jane"], "date": "2024"}
 
     papers = [{"url": "https://a.org/paper", "comments": []},
               {"url": "https://a.org/junk", "comments": []}]
@@ -221,10 +221,10 @@ def test_review_card_edit_saves_the_fields_and_uploads():
     assert at.text_input(key=f"edit_last_{k}_0").value == "Doe"   # others kept
     at.button(key=f"edit_add_{k}").click().run()
     assert at.text_input(key=f"edit_last_{k}_4").value == ""     # Roe doesn't come back
-    at.text_input(key=f"edit_year_{k}").input("2023")
+    at.text_input(key=f"edit_date_{k}").input("2023")
     _buttons(at)["Save edits"].click().run()
     p = _junk(job)
-    assert (p["title"], p["authors"], p["year"]) == \
+    assert (p["title"], p["authors"], p["date"]) == \
         ("The Real Title", ["Doe, Jane", "Urban Institute"], "2023")   # empty row left out
     assert "decision" not in p and "Mark ready for upload" in _buttons(at)   # back to the card
     _buttons(at)["Mark ready for upload"].click().run()
@@ -447,7 +447,7 @@ def test_random_clicking_never_breaks_the_page(monkeypatch, seed):
         if i % 3 == 0:
             return {"metadata_source": "none"}
         return {"metadata_source": "translator", "title": f"Paper {i}",
-                "authors": ["Doe, Jane"], "year": "2024"}
+                "authors": ["Doe, Jane"], "date": "2024"}
     assert scan.start_job([{"url": f"https://a.org/{i}", "comments": []} for i in range(12)],
                           None, enrich=enrich, title_search=lambda *a: None,
                           source={"label": "export.zip"})
@@ -488,7 +488,7 @@ def test_random_table_actions_keep_results_consistent(seed):
         i = int(p["url"].rsplit("/", 1)[1])
         return ({"metadata_source": "none"} if i % 3 == 0 else
                 {"metadata_source": "translator", "title": f"Paper {i}",
-                 "authors": ["Doe, Jane"], "year": "2024"})
+                 "authors": ["Doe, Jane"], "date": "2024"})
     assert scan.start_job([{"url": f"https://a.org/{i}", "comments": []} for i in range(15)],
                           None, enrich=enrich, title_search=lambda *a: None)
     job = scan.current_job()
@@ -509,7 +509,7 @@ def test_random_table_actions_keep_results_consistent(seed):
             page.apply_review_edits(job, urls, {
                 urls.index(p["url"]): {"Title": rnd.choice(["Same", "", "  New  "]),
                                        "Authors": rnd.choice(["Doe,Jane", "", "A; B"]),
-                                       "Year": rnd.choice(["2024", "", "x"])}
+                                       "Date": rnd.choice(["2024", "", "x"])}
                 for p in ticked})
         else:
             page.table_action(job, action, ticked)
@@ -665,16 +665,28 @@ def test_attached_pdf_replaces_the_searchs_and_removing_brings_it_back():
     assert p["local_pdf_path"] == "/found.pdf"
 
 
-def test_card_offers_a_pdf_box_and_shows_an_attached_pdf_with_remove():
+def test_pdf_box_is_only_in_edit_and_remove_waits_for_save():
     job = _scanned_job()
     at = _page()
-    assert [u.label for u in at.get("file_uploader")] == ["Attach a PDF"]
+    assert not at.get("file_uploader")                       # not in plain view
+    _buttons(at)["Edit"].click().run()
+    assert [u.label for u in at.get("file_uploader")] == ["**Attach a PDF**"]
+    _buttons(at)["Cancel"].click().run()
+
     job.attach_pdf(_junk(job)["url"], "/mine.pdf", 20, "mine.pdf")
     at.run()
     assert r"**PDF:** mine\.pdf" in _text(at) and not at.get("file_uploader")
+    _buttons(at)["Edit"].click().run()
     _buttons(at)["Remove PDF"].click().run()
+    assert _junk(job)["attached_pdf_name"] == "mine.pdf"    # not yet
+    assert [u.label for u in at.get("file_uploader")] == ["**Attach a PDF**"]
+    _buttons(at)["Cancel"].click().run()
+    assert _junk(job)["attached_pdf_name"] == "mine.pdf"    # Cancel keeps it
+    _buttons(at)["Edit"].click().run()
+    assert "Remove PDF" in _buttons(at)                     # Cancel forgot the removal
+    _buttons(at)["Remove PDF"].click().run()
+    _buttons(at)["Save edits"].click().run()
     assert "attached_pdf_name" not in _junk(job)
-    assert [u.label for u in at.get("file_uploader")] == ["Attach a PDF"]
 
 
 def test_attached_pdf_is_not_kept_in_saved_results():
