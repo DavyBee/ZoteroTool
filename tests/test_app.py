@@ -634,3 +634,51 @@ def test_removing_the_only_author_leaves_an_empty_row():
     assert boxes == {f"edit_first_{k}_1": "", f"edit_last_{k}_1": ""}
     _buttons(at)["Save edits"].click().run()
     assert _junk(job)["authors"] == []
+
+
+# ── Attaching a PDF on a review card ─────────────────────────────────────────
+
+def test_attached_pdf_is_checked_and_saved(monkeypatch, tmp_path):
+    from slack_to_zotero import config, pdf_storage
+    monkeypatch.setattr(config, "PDFS_DIR", tmp_path)
+    path, size = pdf_storage.save_attached_pdf(b"%PDF-1.7 body")
+    assert open(path, "rb").read() == b"%PDF-1.7 body" and size == 13
+    with pytest.raises(ValueError, match="not a PDF"):
+        pdf_storage.save_attached_pdf(b"<html>paywall</html>")
+    monkeypatch.setattr(config, "PDF_MAX_BYTES", 5)
+    with pytest.raises(ValueError, match="over"):
+        pdf_storage.save_attached_pdf(b"%PDF-1.7 body")
+
+
+def test_attached_pdf_replaces_the_searchs_and_removing_brings_it_back():
+    job = _scanned_job()
+    p = _junk(job)
+    p.update(local_pdf_path="/found.pdf", pdf_size_bytes=10)
+    job.attach_pdf(p["url"], "/mine.pdf", 20, "mine.pdf")
+    assert (p["local_pdf_path"], p["attached_pdf_name"]) == ("/mine.pdf", "mine.pdf")
+    job.attach_pdf(p["url"], "/other.pdf", 30, "other.pdf")     # replace again
+    job.attach_pdf(p["url"], None)
+    assert (p["local_pdf_path"], p["pdf_size_bytes"]) == ("/found.pdf", 10)
+    assert "attached_pdf_name" not in p
+    p["zotero_key"] = "K"                                        # uploaded: fixed
+    job.attach_pdf(p["url"], "/late.pdf", 1, "late.pdf")
+    assert p["local_pdf_path"] == "/found.pdf"
+
+
+def test_card_offers_a_pdf_box_and_shows_an_attached_pdf_with_remove():
+    job = _scanned_job()
+    at = _page()
+    assert [u.label for u in at.get("file_uploader")] == ["Attach a PDF"]
+    job.attach_pdf(_junk(job)["url"], "/mine.pdf", 20, "mine.pdf")
+    at.run()
+    assert r"**PDF:** mine\.pdf" in _text(at) and not at.get("file_uploader")
+    _buttons(at)["Remove PDF"].click().run()
+    assert "attached_pdf_name" not in _junk(job)
+    assert [u.label for u in at.get("file_uploader")] == ["Attach a PDF"]
+
+
+def test_attached_pdf_is_not_kept_in_saved_results():
+    job = _scanned_job()
+    job.attach_pdf(_junk(job)["url"], "/mine.pdf", 20, "mine.pdf")
+    papers, _ = scan.read_saved_results(scan.saved_results(job.papers, "x"))
+    assert all("attached_pdf_name" not in p and "local_pdf_path" not in p for p in papers)

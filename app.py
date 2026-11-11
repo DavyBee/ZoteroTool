@@ -36,6 +36,7 @@ if getattr(sys, "_slack_to_zotero_code", None) != code_stamp():
     sys._slack_to_zotero_code = code_stamp()
 
 from slack_to_zotero import config  # noqa: E402
+from slack_to_zotero import pdf_storage  # noqa: E402
 from slack_to_zotero import scan  # noqa: E402
 from slack_to_zotero import zotero_client  # noqa: E402
 from slack_to_zotero import zotero_index  # noqa: E402
@@ -594,8 +595,12 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
             else:
                 body = "*(No message)*"
             lines.append(f"**Original Slack message:** {body}")
+        if p.get("local_pdf_path") and not p.get("attached_pdf_name"):
+            lines.append("**PDF:** Found by the search")
         # One block with line breaks keeps the card compact.
         st.markdown("  \n".join(lines))
+        if not editing:
+            _pdf_control(job, p, frozen)
 
         actions = st.container(horizontal=True)
         if editing:
@@ -610,6 +615,40 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
                        on_click=_start_editing, args=(p["url"],))
         actions.button("Remove", disabled=frozen, key="card_remove",
                        on_click=_decide, args=(job, items, i, "removed"))
+
+
+def _pdf_control(job: scan.Job, p: dict, frozen: bool) -> None:
+    """The PDF a person attached, with Remove, or a box to attach one."""
+    if p.get("attached_pdf_name"):
+        row = st.container(horizontal=True, vertical_alignment="center")
+        row.markdown(f"**PDF:** {_md(p['attached_pdf_name'])}")
+        row.button("Remove PDF", disabled=frozen, key="card_pdf_remove",
+                   on_click=job.attach_pdf, args=(p["url"], None))
+        return
+    if frozen:
+        return
+    # A new key after each pick empties the box again.
+    key = f"card_pdf_{zlib.crc32(p['url'].encode())}_{st.session_state.get('pdf_pick', 0)}"
+    label = "Replace the PDF" if p.get("local_pdf_path") else "Attach a PDF"
+    st.file_uploader(label, type=["pdf"], key=key,
+                     on_change=_attach_pdf, args=(job, p["url"], key))
+    error = st.session_state.get("pdf_error")
+    if error and error[0] == p["url"]:
+        st.error(error[1])
+
+
+def _attach_pdf(job: scan.Job, url: str, key: str) -> None:
+    picked = st.session_state.get(key)
+    if picked is None:
+        return
+    st.session_state.pdf_pick = st.session_state.get("pdf_pick", 0) + 1
+    try:
+        path, size = pdf_storage.save_attached_pdf(picked.getvalue())
+    except ValueError as exc:
+        st.session_state.pdf_error = (url, str(exc))
+        return
+    st.session_state.pop("pdf_error", None)
+    job.attach_pdf(url, path, size, picked.name)
 
 
 def _edit_fields(p: dict) -> dict:

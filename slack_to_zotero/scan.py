@@ -530,6 +530,29 @@ class Job:
                         p["decision"] = "edited"
                     return
 
+    def attach_pdf(self, url: str, path: Optional[str], size: Optional[int] = None,
+                   name: Optional[str] = None) -> None:
+        """Attach a PDF a person chose to an item, in place of any the search
+        found. With path None, take it off again (the search's PDF, if there
+        was one, comes back)."""
+        with self.lock:
+            if not self._changeable():
+                return
+            for p in self.papers:
+                if p["url"] != url or p.get("bucket") not in (READY, REVIEW) \
+                        or p.get("zotero_key"):
+                    continue
+                if path:
+                    if "attached_pdf_name" not in p:
+                        p["search_pdf"] = (p.get("local_pdf_path"), p.get("pdf_size_bytes"))
+                    p.update(local_pdf_path=path, pdf_size_bytes=size,
+                             attached_pdf_name=name or "Attached PDF")
+                elif "attached_pdf_name" in p:
+                    prev_path, prev_size = p.pop("search_pdf", (None, None))
+                    p.pop("attached_pdf_name")
+                    p["local_pdf_path"], p["pdf_size_bytes"] = prev_path, prev_size
+                return
+
     def selected(self) -> list[dict]:
         with self.lock:
             return [p for p in self.papers
@@ -774,7 +797,7 @@ SAVED_MARK = "slack_to_zotero_saved_results"
 _NOT_SAVED = ("bucket", "reason", "include", "decision", "was_edited", "zotero_key",
               "upload_error", "existing_key", "existing_how", "existing_url",
               "existing_title", "local_pdf_path", "pdf_size_bytes", "not_scanned",
-              "scan_error", "marked_at")
+              "scan_error", "marked_at", "attached_pdf_name", "search_pdf")
 
 
 def saved_results(papers: list[dict], label: str) -> bytes:
