@@ -646,7 +646,8 @@ def _pdf_edit(p: dict, k: int) -> None:
     else:
         found = p.get("local_pdf_path") and not p.get("attached_pdf_name")
         st.file_uploader("**Replace the PDF found by the search**" if found else "**Attach a PDF**",
-                         type=["pdf"], key=_pdf_key(k))
+                         type=["pdf"], key=_pdf_key(k),
+                         on_change=st.session_state.pop, args=("pdf_error", None))
     if st.session_state.get("pdf_error"):
         st.error(st.session_state.pdf_error)
 
