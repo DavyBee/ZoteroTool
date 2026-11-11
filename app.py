@@ -36,6 +36,7 @@ if getattr(sys, "_slack_to_zotero_code", None) != code_stamp():
     sys._slack_to_zotero_code = code_stamp()
 
 from slack_to_zotero import config  # noqa: E402
+from slack_to_zotero import metadata  # noqa: E402
 from slack_to_zotero import pdf_storage  # noqa: E402
 from slack_to_zotero import scan  # noqa: E402
 from slack_to_zotero import zotero_client  # noqa: E402
@@ -346,6 +347,7 @@ def _stop_editing() -> None:
                                       "edit_pdf_drop_"))]:
         del st.session_state[key]
     st.session_state.pop("pdf_error", None)
+    st.session_state.pop("date_error", None)
     # A new key empties the PDF box for the next edit.
     st.session_state.pdf_pick = st.session_state.get("pdf_pick", 0) + 1
 
@@ -357,6 +359,11 @@ def _start_editing(url: str) -> None:
 def _save_card(job: scan.Job, p: dict) -> None:
     k = zlib.crc32(p["url"].encode())
     get = lambda name: (st.session_state.get(f"edit_{name}_{k}") or "").strip()
+    try:
+        date = _typed_card_date(k)
+    except ValueError as exc:
+        st.session_state.date_error = str(exc)         # stay in edit; nothing saved
+        return
     picked = st.session_state.get(_pdf_key(k))
     if picked is not None:
         try:
@@ -370,7 +377,7 @@ def _save_card(job: scan.Job, p: dict) -> None:
     job.edit(p["url"], {
         "title": get("title") or None,
         "authors": _typed_authors(k),
-        "date": get("date") or None,
+        "date": date,
         "item_type": st.session_state.get(f"edit_type_{k}") or p.get("item_type"),
         "journal": get("journal") or None})
     _bump_table()
@@ -457,7 +464,7 @@ def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
             row["Summary"] = p.get("summary") or ""
         row.update({"Title": p.get("title") or p.get("slack_file_name") or "",
                     "Authors": "; ".join(p.get("authors") or []),
-                    "Date": p.get("date") or "", "Journal": p.get("journal") or ""})
+                    "Date": metadata.format_date(p.get("date")), "Journal": p.get("journal") or ""})
         if mode == "ready":
             row["Added by"] = "User" if p.get("decision") else "Search"
         rows.append(row)
@@ -480,7 +487,7 @@ def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
             "Authors": st.column_config.TextColumn("Authors (Last, First; Last, First; ...)",
                                                    width=320 if ready else 240,
                                                    help="Separate authors with semicolons"),
-            "Date": st.column_config.TextColumn(width=95, help="2024, 2024-03, or 2024-03-15"),
+            "Date": st.column_config.TextColumn(width=125, help="15 March 2024, March 2024, or 2024"),
             "Journal": st.column_config.TextColumn(width=170),
             "Summary": st.column_config.TextColumn(width=300),
             "Added by": st.column_config.TextColumn(width=75),
@@ -489,9 +496,11 @@ def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
     changes = st.session_state.get(key, {}).get("edited_rows", {})
     bar = st.container(horizontal=True)
     if any(set(c) - {"Select"} for c in changes.values()):
+        if st.session_state.get(f"{name}_error"):
+            st.error(st.session_state[f"{name}_error"])
         bar.button("Save edits", type="primary", key=f"{name}_save",
-                   on_click=_save_table, args=(job, urls, key))
-        bar.button("Cancel", key=f"{name}_cancel", on_click=_bump_table)
+                   on_click=_save_table, args=(job, urls, key, name))
+        bar.button("Cancel", key=f"{name}_cancel", on_click=_cancel_table, args=(name,))
         return
     chosen = [items[int(r)] for r, c in changes.items()
               if c.get("Select") and int(r) < len(items)
@@ -532,13 +541,30 @@ def table_action(job: scan.Job, action: str, items: list[dict]) -> None:
     _bump_table()
 
 
-def _save_table(job: scan.Job, urls: list[str], key: str) -> None:
-    apply_review_edits(job, urls, st.session_state[key]["edited_rows"])
+def _save_table(job: scan.Job, urls: list[str], key: str, name: str) -> None:
+    error = apply_review_edits(job, urls, st.session_state[key]["edited_rows"])
+    if error:
+        st.session_state[f"{name}_error"] = error      # keep the edits to fix
+        return
+    st.session_state.pop(f"{name}_error", None)
     _bump_table()
 
 
-def apply_review_edits(job: scan.Job, urls: list[str], edited_rows: dict) -> None:
-    """Save details typed into a review table."""
+def _cancel_table(name: str) -> None:
+    st.session_state.pop(f"{name}_error", None)
+    _bump_table()
+
+
+def apply_review_edits(job: scan.Job, urls: list[str], edited_rows: dict) -> str | None:
+    """Save details typed into a review table. If a typed date is unclear,
+    nothing is saved and the message for the page is returned."""
+    dates = {}
+    for row, change in edited_rows.items():
+        if "Date" in change:
+            try:
+                dates[row] = metadata.parse_typed_date(change["Date"] or "")
+            except ValueError as exc:
+                return f"{change['Date'].strip()}: {exc}"
     for row, change in edited_rows.items():
         fields = {}
         if "Title" in change:
@@ -546,11 +572,12 @@ def apply_review_edits(job: scan.Job, urls: list[str], edited_rows: dict) -> Non
         if "Authors" in change:
             fields["authors"] = [a.strip() for a in change["Authors"].split(";") if a.strip()]
         if "Date" in change:
-            fields["date"] = change["Date"].strip() or None
+            fields["date"] = dates[row]
         if "Journal" in change:
             fields["journal"] = change["Journal"].strip() or None
         if fields:
             job.edit(urls[int(row)], fields)
+    return None
 
 
 def mark_for_upload(job: scan.Job, items: list[dict]) -> None:
@@ -590,7 +617,7 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
             lines = [
                 _field("Title", p.get("title") or p.get("slack_file_name")),
                 _field("Authors", _all_authors(p.get("authors") or [])),
-                _field("Date", p.get("date")),
+                _field("Date", metadata.format_date(p.get("date"))),
                 _field("Website" if p.get("item_type") == "webpage" else "Journal",
                        p.get("journal") or (scan.site_name(p["url"])
                                             if p.get("item_type") == "webpage" else None)),
@@ -652,25 +679,55 @@ def _pdf_edit(p: dict, k: int) -> None:
         st.error(st.session_state.pdf_error)
 
 
-def _edit_fields(p: dict) -> dict:
+def _edit_fields(p: dict) -> None:
     """The card's details as inputs, in place of the plain text."""
     k = zlib.crc32(p["url"].encode())      # one set of inputs per item
     title = st.text_input("**Title**", value=p.get("title") or p.get("slack_file_name") or "",
                           key=f"edit_title_{k}")
     _author_rows(p, k)
-    c1, c2, c3 = st.columns([1, 2, 3])
-    date = c1.text_input("**Date**", value=p.get("date") or "", key=f"edit_date_{k}",
-                         help="2024, 2024-03, or 2024-03-15")
+    _date_boxes(p, k)
+    c2, c3 = st.columns([2, 3])
     kind = p.get("item_type") if p.get("item_type") in _ITEM_TYPES else "journalArticle"
-    item_type = c2.selectbox("**Type**", _ITEM_TYPES, index=_ITEM_TYPES.index(kind),
-                             key=f"edit_type_{k}")
-    journal = c3.text_input("**Journal or website**", value=p.get("journal") or "",
-                            key=f"edit_journal_{k}")
+    c2.selectbox("**Type**", _ITEM_TYPES, index=_ITEM_TYPES.index(kind), key=f"edit_type_{k}")
+    c3.text_input("**Journal or website**", value=p.get("journal") or "",
+                  key=f"edit_journal_{k}")
     _pdf_edit(p, k)
-    return {"title": title.strip() or None,
-            "authors": _typed_authors(k),
-            "date": date.strip() or None, "item_type": item_type,
-            "journal": journal.strip() or None}
+
+
+def _date_boxes(p: dict, k: int) -> None:
+    """Year, then an optional month, then an optional day once a month is
+    chosen: one fixed form for every date."""
+    year, month, day = metadata.date_parts(p.get("date"))
+    c1, c2, c3, _ = st.columns([1, 1.4, 0.8, 2.8])
+    c1.text_input("**Year**", value=year, key=f"edit_year_{k}", max_chars=4)
+    c2.selectbox("**Month** *(optional)*", [None, *range(1, 13)], index=month or 0,
+                 key=f"edit_month_{k}",
+                 format_func=lambda m: metadata.MONTH_NAMES[m - 1] if m else "")
+    no_month = not st.session_state.get(f"edit_month_{k}", month)
+    c3.selectbox("**Day**", [None, *range(1, 32)], index=day or 0, key=f"edit_day_{k}",
+                 disabled=no_month, format_func=lambda d: str(d) if d else "")
+    if st.session_state.get("date_error"):
+        st.error(st.session_state.date_error)
+
+
+def _typed_card_date(k: int) -> str | None:
+    """The card's date boxes as a stored date. Raises ValueError with a
+    message for the page."""
+    year = (st.session_state.get(f"edit_year_{k}") or "").strip()
+    month = st.session_state.get(f"edit_month_{k}")
+    day = st.session_state.get(f"edit_day_{k}") if month else None
+    if not year:
+        if month:
+            raise ValueError("Add the year.")
+        return None
+    if not (len(year) == 4 and year.isdigit()):
+        raise ValueError("The year should be four digits, like 2024.")
+    date = metadata.clean_date([year, month, day])
+    if not date:
+        raise ValueError("The year should be four digits, like 2024.")
+    if day and date.count("-") < 2:
+        raise ValueError(f"{metadata.MONTH_NAMES[month - 1]} has no day {day}.")
+    return date
 
 
 def _split_name(author: str) -> tuple[str, str]:

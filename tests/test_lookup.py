@@ -376,3 +376,31 @@ def test_an_ai_reply_with_year_instead_of_date_still_works(monkeypatch, tmp_path
     out = metadata.fetch_llm("https://a.org", [], "key", str(tmp_path / "audit.jsonl"),
                              page_text="some page text " * 50)
     assert out is not None and metadata._llm_to_fields(out)["date"] == "2024"
+
+
+@pytest.mark.parametrize("typed, want", [
+    ("", None), ("  ", None),
+    ("2024", "2024"), ("2024-03", "2024-03"), ("2024-03-15", "2024-03-15"), ("2024/3/5", "2024-03-05"),
+    ("March 2024", "2024-03"), ("march 2024", "2024-03"), ("Mar 2024", "2024-03"),
+    ("Sept 2024", "2024-09"), ("15 March 2024", "2024-03-15"), ("March 15, 2024", "2024-03-15"),
+    ("15th Mar. 2024", "2024-03-15"),
+])
+def test_typed_dates_in_clear_forms_are_stored_one_way(typed, want):
+    assert metadata.parse_typed_date(typed) == want
+
+
+@pytest.mark.parametrize("typed", [
+    "05/03/2024",            # May or March?
+    "Spring 2024", "Marchxyz 2024", "Ma 2024", "March", "15 March", "24",
+    "2024-13", "30 February 2024", "2024-02-30", "15 March 16 2024", "x",
+])
+def test_unclear_typed_dates_are_refused(typed):
+    with pytest.raises(ValueError, match="Use a date like"):
+        metadata.parse_typed_date(typed)
+
+
+def test_dates_show_in_one_form():
+    assert [metadata.format_date(d) for d in ("2024-03-05", "2024-03", "2024", None, "Spring 2024")] == \
+        ["5 March 2024", "March 2024", "2024", "", "Spring 2024"]
+    assert metadata.date_parts("2024-03-05") == ("2024", 3, 5)
+    assert metadata.date_parts("Spring 2024") == ("2024", None, None)

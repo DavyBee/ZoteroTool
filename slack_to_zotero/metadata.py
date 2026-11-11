@@ -668,6 +668,72 @@ def clean_date(value) -> Optional[str]:
                 day.group(1) if day else None)
 
 
+MONTH_NAMES = ("January", "February", "March", "April", "May", "June", "July",
+               "August", "September", "October", "November", "December")
+
+
+def date_parts(date: Optional[str]) -> tuple[str, Optional[int], Optional[int]]:
+    """A stored date as (year, month, day), e.g. ("2024", 3, None). A date
+    in another form (typed before dates had a fixed form) gives its year."""
+    m = re.fullmatch(r"(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?", (date or "").strip())
+    if not m:
+        year = _YEAR_RE.search(date or "")
+        return (year.group(1) if year else ""), None, None
+    y, mo, d = m.groups()
+    return y, int(mo) if mo else None, int(d) if d else None
+
+
+def format_date(date: Optional[str]) -> str:
+    """A stored date as shown on the page: "15 March 2024", "March 2024", or
+    "2024". Anything else is shown as stored."""
+    y, mo, d = date_parts(date)
+    if not re.fullmatch(r"\d{4}(-\d{2}(-\d{2})?)?", (date or "").strip()):
+        return date or ""
+    if mo and d:
+        return f"{d} {MONTH_NAMES[mo - 1]} {y}"
+    return f"{MONTH_NAMES[mo - 1]} {y}" if mo else y
+
+
+_TYPED_ISO_RE = re.compile(r"(\d{4})(?:[-/.](\d{1,2})(?:[-/.](\d{1,2}))?)?")
+_TYPED_WORDS_RE = re.compile(
+    r"(?:(\d{1,2})(?:st|nd|rd|th)?\s+)?([a-z]+)\.?\s*(?:(\d{1,2})(?:st|nd|rd|th)?,?\s+)?,?\s*(\d{4})",
+    re.I)
+
+
+def _month_number(word: str) -> Optional[int]:
+    """1-12 for a month name or its start ("Mar", "Sept"), else None."""
+    word = word.lower()
+    for i, name in enumerate(MONTH_NAMES):
+        if len(word) >= 3 and name.lower().startswith(word):
+            return i + 1
+    return None
+
+
+def parse_typed_date(text: str) -> Optional[str]:
+    """A date a person typed, stored as 'YYYY-MM-DD', 'YYYY-MM' or 'YYYY'.
+    Blank gives None. Raises ValueError for anything unclear: no year, an
+    unknown month, a day that isn't in the month, or a numeric date such as
+    05/03/2024 (May or March?)."""
+    text = " ".join((text or "").split())
+    if not text:
+        return None
+    parts = None
+    m = _TYPED_ISO_RE.fullmatch(text)
+    if m:
+        parts = [g for g in m.groups() if g is not None]
+    else:
+        m = _TYPED_WORDS_RE.fullmatch(text)
+        month = _month_number(m.group(2)) if m else None
+        if month and not (m.group(1) and m.group(3)):         # one day, not two
+            day = m.group(1) or m.group(3)
+            parts = [m.group(4), str(month)] + ([day] if day else [])
+    if parts:
+        date = _iso(*parts)
+        if date and len(date.split("-")) == len(parts):     # every part was real
+            return date
+    raise ValueError("Use a date like 15 March 2024, March 2024, or 2024.")
+
+
 # ── LLM fallback ──────────────────────────────────────────────────────────────
 
 _LLM_REQUIRED_KEYS = {"title", "authors", "item_type"}   # and "date" (or "year")

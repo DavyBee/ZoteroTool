@@ -221,7 +221,7 @@ def test_review_card_edit_saves_the_fields_and_uploads():
     assert at.text_input(key=f"edit_last_{k}_0").value == "Doe"   # others kept
     at.button(key=f"edit_add_{k}").click().run()
     assert at.text_input(key=f"edit_last_{k}_4").value == ""     # Roe doesn't come back
-    at.text_input(key=f"edit_date_{k}").input("2023")
+    at.text_input(key=f"edit_year_{k}").input("2023")
     _buttons(at)["Save edits"].click().run()
     p = _junk(job)
     assert (p["title"], p["authors"], p["date"]) == \
@@ -694,3 +694,60 @@ def test_attached_pdf_is_not_kept_in_saved_results():
     job.attach_pdf(_junk(job)["url"], "/mine.pdf", 20, "mine.pdf")
     papers, _ = scan.read_saved_results(scan.saved_results(job.papers, "x"))
     assert all("attached_pdf_name" not in p and "local_pdf_path" not in p for p in papers)
+
+
+# ── Dates in one form ────────────────────────────────────────────────────────
+
+def test_table_dates_are_stored_one_way_and_unclear_ones_save_nothing():
+    import app as page
+    job = _scanned_job()
+    p = _junk(job)
+    assert page.apply_review_edits(job, [p["url"]], {0: {"Date": "March 2024"}}) is None
+    assert p["date"] == "2024-03"
+    error = page.apply_review_edits(job, [p["url"]], {0: {"Date": "05/03/2024", "Title": "New"}})
+    assert "Use a date like" in error
+    assert p["date"] == "2024-03" and p.get("title") != "New"     # nothing saved
+
+
+def test_table_shows_an_unclear_date_and_keeps_the_edits():
+    job = _scanned_job()
+    at = _page()
+    at.radio(key="review_view").set_value("Table").run()
+    at.session_state["t_left_0"] = {"edited_rows": {0: {"Date": "Spring 2024"}}}
+    at.run()
+    _buttons(at)["Save edits"].click().run()
+    assert "Use a date like" in at.error[0].value
+    assert "Save edits" in _buttons(at) and "date" not in _junk(job)
+    _buttons(at)["Cancel"].click().run()
+    assert not at.error
+
+
+def test_card_date_boxes_save_one_form_and_refuse_impossible_dates():
+    import zlib
+    job = _scanned_job()
+    p = _junk(job)
+    at = _page()
+    _buttons(at)["Edit"].click().run()
+    k = zlib.crc32(p["url"].encode())
+    assert at.selectbox(key=f"edit_day_{k}").disabled           # no month yet
+    at.selectbox(key=f"edit_month_{k}").set_value(2).run()
+    at.text_input(key=f"edit_year_{k}").input("2024")
+    at.selectbox(key=f"edit_day_{k}").set_value(30).run()
+    _buttons(at)["Save edits"].click().run()
+    assert "February has no day 30." in at.error[0].value and "date" not in p
+    at.selectbox(key=f"edit_day_{k}").set_value(29).run()
+    _buttons(at)["Save edits"].click().run()
+    assert p["date"] == "2024-02-29"
+    assert "**Date:** 29 February 2024" in _text(at)
+
+
+def test_card_month_needs_a_year():
+    import zlib
+    job = _scanned_job()
+    p = _junk(job)
+    at = _page()
+    _buttons(at)["Edit"].click().run()
+    k = zlib.crc32(p["url"].encode())
+    at.selectbox(key=f"edit_month_{k}").set_value(5).run()
+    _buttons(at)["Save edits"].click().run()
+    assert "Add the year." in at.error[0].value and "date" not in p
