@@ -700,7 +700,7 @@ def _date_boxes(p: dict, k: int) -> None:
     year, month, day = metadata.date_parts(p.get("date"))
     c1, c2, c3, _ = st.columns([1, 1.4, 1, 2.6])
     c1.text_input("**Year**", value=year, key=f"edit_year_{k}", max_chars=4)
-    c2.selectbox("**Month** *(optional)*", [None, *range(1, 13)], index=month or 0,
+    c2.selectbox("**Month**", [None, *range(1, 13)], index=month or 0,
                  key=f"edit_month_{k}",
                  format_func=lambda m: metadata.MONTH_NAMES[m - 1] if m else "Not set")
     no_month = not st.session_state.get(f"edit_month_{k}", month)
