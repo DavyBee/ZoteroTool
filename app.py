@@ -451,13 +451,14 @@ def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
         if show_status:
             row["Status"] = _status(p)
         if mode != "ready":
+            # Summary early: the table scrolls sideways, and a last column
+            # can't be dragged wider (its edge is the table's edge).
             row["Reason"] = p.get("reason", "")
+            row["Summary"] = p.get("summary") or ""
         row.update({"Title": p.get("title") or p.get("slack_file_name") or "",
                     "Authors": "; ".join(p.get("authors") or []),
                     "Date": p.get("date") or "", "Journal": p.get("journal") or ""})
-        if mode != "ready":
-            row["Summary"] = p.get("summary") or ""
-        else:
+        if mode == "ready":
             row["Added by"] = "User" if p.get("decision") else "Search"
         rows.append(row)
     urls = [p["url"] for p in items]
@@ -481,7 +482,7 @@ def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
                                                    help="Separate authors with semicolons"),
             "Date": st.column_config.TextColumn(width=95, help="2024, 2024-03, or 2024-03-15"),
             "Journal": st.column_config.TextColumn(width=170),
-            "Summary": st.column_config.TextColumn(width=240),
+            "Summary": st.column_config.TextColumn(width=300),
             "Added by": st.column_config.TextColumn(width=75),
         },
     )
