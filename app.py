@@ -698,14 +698,14 @@ def _date_boxes(p: dict, k: int) -> None:
     """Year, then an optional month, then an optional day once a month is
     chosen: one fixed form for every date."""
     year, month, day = metadata.date_parts(p.get("date"))
-    c1, c2, c3, _ = st.columns([1, 1.4, 0.8, 2.8])
+    c1, c2, c3, _ = st.columns([1, 1.4, 1, 2.6])
     c1.text_input("**Year**", value=year, key=f"edit_year_{k}", max_chars=4)
     c2.selectbox("**Month** *(optional)*", [None, *range(1, 13)], index=month or 0,
                  key=f"edit_month_{k}",
-                 format_func=lambda m: metadata.MONTH_NAMES[m - 1] if m else "")
+                 format_func=lambda m: metadata.MONTH_NAMES[m - 1] if m else "Not set")
     no_month = not st.session_state.get(f"edit_month_{k}", month)
     c3.selectbox("**Day**", [None, *range(1, 32)], index=day or 0, key=f"edit_day_{k}",
-                 disabled=no_month, format_func=lambda d: str(d) if d else "")
+                 disabled=no_month, format_func=lambda d: str(d) if d else "Not set")
     if st.session_state.get("date_error"):
         st.error(st.session_state.date_error)
 
