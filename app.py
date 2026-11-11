@@ -487,7 +487,7 @@ def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
             "Authors": st.column_config.TextColumn("Authors (Last, First; Last, First; ...)",
                                                    width=320 if ready else 240,
                                                    help="Separate authors with semicolons"),
-            "Date": st.column_config.TextColumn(width=125, help="15 March 2024, March 2024, or 2024"),
+            "Date": st.column_config.TextColumn(width=135, help=metadata.TYPED_DATE_HELP),
             "Journal": st.column_config.TextColumn(width=170),
             "Summary": st.column_config.TextColumn(width=300),
             "Added by": st.column_config.TextColumn(width=75),
@@ -564,7 +564,7 @@ def apply_review_edits(job: scan.Job, urls: list[str], edited_rows: dict) -> str
             try:
                 dates[row] = metadata.parse_typed_date(change["Date"] or "")
             except ValueError as exc:
-                return f"{change['Date'].strip()}: {exc}"
+                return f'"{change["Date"].strip()}" is not a date the table can read. {exc}'
     for row, change in edited_rows.items():
         fields = {}
         if "Title" in change:

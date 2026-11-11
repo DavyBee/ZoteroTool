@@ -705,7 +705,7 @@ def test_table_dates_are_stored_one_way_and_unclear_ones_save_nothing():
     assert page.apply_review_edits(job, [p["url"]], {0: {"Date": "March 2024"}}) is None
     assert p["date"] == "2024-03"
     error = page.apply_review_edits(job, [p["url"]], {0: {"Date": "05/03/2024", "Title": "New"}})
-    assert "Use a date like" in error
+    assert "Type dates as March 15, 2024" in error
     assert p["date"] == "2024-03" and p.get("title") != "New"     # nothing saved
 
 
@@ -716,7 +716,7 @@ def test_table_shows_an_unclear_date_and_keeps_the_edits():
     at.session_state["t_left_0"] = {"edited_rows": {0: {"Date": "Spring 2024"}}}
     at.run()
     _buttons(at)["Save edits"].click().run()
-    assert "Use a date like" in at.error[0].value
+    assert "Type dates as March 15, 2024" in at.error[0].value
     assert "Save edits" in _buttons(at) and "date" not in _junk(job)
     _buttons(at)["Cancel"].click().run()
     assert not at.error
@@ -738,7 +738,7 @@ def test_card_date_boxes_save_one_form_and_refuse_impossible_dates():
     at.selectbox(key=f"edit_day_{k}").set_value(29).run()
     _buttons(at)["Save edits"].click().run()
     assert p["date"] == "2024-02-29"
-    assert "**Date:** 29 February 2024" in _text(at)
+    assert "**Date:** February 29, 2024" in _text(at)
 
 
 def test_card_month_needs_a_year():
