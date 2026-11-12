@@ -5,7 +5,7 @@ This app adds the papers and links shared in the Eviction Lab's literature Slack
 ## Using the app
 
 1. Upload the channel's Slack export: the .zip file, or the channel's daily .json files.
-2. Click **Search for sources**. The app reads every link and uploaded document and looks up its title, authors, year, and journal. 
+2. Click **Search for sources**. The app reads every link and uploaded document and looks up its title, authors, date, and journal. 
 3. Review the results, which are sorted into three groups:
    - **Ready**: metadata was found. These are uploaded. Fix details by double-clicking a cell, **Move to Review**,or **Remove**.
    - **Review**: the app couldn't identify these, or they probably aren't sources or block automated access. **Mark ready for upload**, **Edit** its details in place, or **Remove** each. These are not uploaded until marked **Ready for upload**.
