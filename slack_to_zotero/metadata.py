@@ -696,16 +696,16 @@ def format_date(date: Optional[str]) -> str:
 
 
 # Month Day, Year: the day, or the month and day, may be left off.
-_TYPED_DATE_RE = re.compile(r"(?:([A-Za-z]+)(?: (\d{1,2}),)? )?(\d{4})")
+_TYPED_DATE_RE = re.compile(r"(?:([A-Za-z]+)(?: (\d{1,2}),?)? )?(\d{4})")
 TYPED_DATE_HELP = "Type dates as March 15, 2024, or March 2024, or 2024."
 
 
 def parse_typed_date(text: str) -> Optional[str]:
     """A date typed in a table, stored as 'YYYY-MM-DD', 'YYYY-MM' or 'YYYY'.
     Only one form is accepted: "March 15, 2024" (month spelled out), with
-    the day, or the month and day, left off when unknown. Blank gives None.
-    Anything else raises ValueError."""
-    text = " ".join((text or "").split())
+    the day, or the month and day, left off when unknown. The comma may be
+    left out. Blank gives None. Anything else raises ValueError."""
+    text = " ".join((text or "").replace(",", ", ").split())
     if not text:
         return None
     m = _TYPED_DATE_RE.fullmatch(text)

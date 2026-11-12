@@ -384,6 +384,7 @@ def test_an_ai_reply_with_year_instead_of_date_still_works(monkeypatch, tmp_path
     ("  March   15,   2024 ", "2024-03-15"),          # extra spaces are fine
     ("March 2024", "2024-03"), ("2024", "2024"),
     ("February 29, 2024", "2024-02-29"),
+    ("March 15 2024", "2024-03-15"), ("March 15,2024", "2024-03-15"),   # comma optional
 ])
 def test_typed_dates_are_month_day_year(typed, want):
     assert metadata.parse_typed_date(typed) == want
@@ -391,7 +392,7 @@ def test_typed_dates_are_month_day_year(typed, want):
 
 @pytest.mark.parametrize("typed", [
     "15 March 2024", "2024-03-15", "2024-03", "Mar 15, 2024", "Mar 2024",   # other forms
-    "March 15 2024", "March 15,2024",                                       # comma, then a space
+    "March, 2024", "March 15, 2024,", "2024 March",                         # misplaced comma or order
     "05/03/2024", "Spring 2024", "March", "March 15", "24",
     "February 30, 2024", "March 0, 2024", "x",
 ])

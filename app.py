@@ -347,7 +347,6 @@ def _stop_editing() -> None:
                                       "edit_pdf_drop_"))]:
         del st.session_state[key]
     st.session_state.pop("pdf_error", None)
-    st.session_state.pop("date_error", None)
     # A new key empties the PDF box for the next edit.
     st.session_state.pdf_pick = st.session_state.get("pdf_pick", 0) + 1
 
@@ -361,9 +360,8 @@ def _save_card(job: scan.Job, p: dict) -> None:
     get = lambda name: (st.session_state.get(f"edit_{name}_{k}") or "").strip()
     try:
         date = _typed_card_date(k)
-    except ValueError as exc:
-        st.session_state.date_error = str(exc)         # stay in edit; nothing saved
-        return
+    except ValueError:
+        return                                         # the message is already shown
     picked = st.session_state.get(_pdf_key(k))
     if picked is not None:
         try:
@@ -506,11 +504,13 @@ def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
     changes = st.session_state.get(key, {}).get("edited_rows", {})
     bar = st.container(horizontal=True)
     if any(set(c) - {"Select"} for c in changes.values()):
-        if st.session_state.get(f"{name}_error"):
-            st.error(st.session_state[f"{name}_error"])
-        bar.button("Save edits", type="primary", key=f"{name}_save",
-                   on_click=_save_table, args=(job, urls, key, name))
-        bar.button("Cancel", key=f"{name}_cancel", on_click=_cancel_table, args=(name,))
+        # Checked on every change, so a bad date shows as soon as the cell is left.
+        problem = _bad_dates(changes)
+        if problem:
+            st.error(problem)
+        bar.button("Save edits", type="primary", key=f"{name}_save", disabled=bool(problem),
+                   on_click=_save_table, args=(job, urls, key))
+        bar.button("Cancel", key=f"{name}_cancel", on_click=_bump_table)
         return
     chosen = [items[int(r)] for r, c in changes.items()
               if c.get("Select") and int(r) < len(items)
@@ -551,30 +551,34 @@ def table_action(job: scan.Job, action: str, items: list[dict]) -> None:
     _bump_table()
 
 
-def _save_table(job: scan.Job, urls: list[str], key: str, name: str) -> None:
-    error = apply_review_edits(job, urls, st.session_state[key]["edited_rows"])
-    if error:
-        st.session_state[f"{name}_error"] = error      # keep the edits to fix
-        return
-    st.session_state.pop(f"{name}_error", None)
-    _bump_table()
+def _save_table(job: scan.Job, urls: list[str], key: str) -> None:
+    if apply_review_edits(job, urls, st.session_state[key]["edited_rows"]) is None:
+        _bump_table()                                  # else keep the edits to fix
 
 
-def _cancel_table(name: str) -> None:
-    st.session_state.pop(f"{name}_error", None)
-    _bump_table()
+def _bad_dates(edited_rows: dict) -> str | None:
+    """The message for every typed date the table can't read, or None."""
+    bad = []
+    for change in edited_rows.values():
+        if "Date" in change:
+            try:
+                metadata.parse_typed_date(change["Date"] or "")
+            except ValueError:
+                bad.append(f'"{change["Date"].strip()}"')
+    if not bad:
+        return None
+    what = f"{bad[0]} is not a date" if len(bad) == 1 else f"{', '.join(bad)} are not dates"
+    return f"{what} the table can read. {metadata.TYPED_DATE_HELP}"
 
 
 def apply_review_edits(job: scan.Job, urls: list[str], edited_rows: dict) -> str | None:
     """Save details typed into a review table. If a typed date is unclear,
     nothing is saved and the message for the page is returned."""
-    dates = {}
-    for row, change in edited_rows.items():
-        if "Date" in change:
-            try:
-                dates[row] = metadata.parse_typed_date(change["Date"] or "")
-            except ValueError as exc:
-                return f'"{change["Date"].strip()}" is not a date the table can read. {exc}'
+    problem = _bad_dates(edited_rows)
+    if problem:
+        return problem
+    dates = {row: metadata.parse_typed_date(change["Date"] or "")
+             for row, change in edited_rows.items() if "Date" in change}
     for row, change in edited_rows.items():
         fields = {}
         if "Title" in change:
@@ -656,6 +660,7 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
         actions = st.container(horizontal=True)
         if editing:
             actions.button("Save edits", type="primary", key="card_save",
+                           disabled=bool(_card_date_error(zlib.crc32(p["url"].encode()))),
                            on_click=_save_card, args=(job, p))
             actions.button("Cancel", key="card_cancel", on_click=_stop_editing)
             return
@@ -709,21 +714,24 @@ def _date_boxes(p: dict, k: int) -> None:
     chosen: one fixed form for every date."""
     year, month, day = metadata.date_parts(p.get("date"))
     c1, c2, c3, _ = st.columns([1, 1.4, 1, 2.6])
-    c1.text_input("**Year**", value=year, key=f"edit_year_{k}", max_chars=4,
-                  on_change=_clear_date_error)
-    c2.selectbox("**Month**", range(13), index=month or 0, on_change=_clear_date_error,
-                 key=f"edit_month_{k}",
+    c1.text_input("**Year**", value=year, key=f"edit_year_{k}", max_chars=4)
+    c2.selectbox("**Month**", range(13), index=month or 0, key=f"edit_month_{k}",
                  format_func=lambda m: metadata.MONTH_NAMES[m - 1] if m else "Not set")
     no_month = not st.session_state.get(f"edit_month_{k}", month)
     c3.selectbox("**Day**", range(32), index=day or 0, key=f"edit_day_{k}",
-                 on_change=_clear_date_error,
                  disabled=no_month, format_func=lambda d: str(d) if d else "Not set")
-    if st.session_state.get("date_error"):
-        st.error(st.session_state.date_error)
+    # Checked on every change, so a bad date shows as soon as a box is left.
+    error = _card_date_error(k)
+    if error:
+        st.error(error)
 
 
-def _clear_date_error() -> None:
-    st.session_state.pop("date_error", None)
+def _card_date_error(k: int) -> str | None:
+    try:
+        _typed_card_date(k)
+    except ValueError as exc:
+        return str(exc)
+    return None
 
 
 def _typed_card_date(k: int) -> str | None:

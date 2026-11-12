@@ -712,17 +712,28 @@ def test_table_dates_are_stored_one_way_and_unclear_ones_save_nothing():
     assert p["date"] == "2024-03" and p.get("title") != "New"     # nothing saved
 
 
-def test_table_shows_an_unclear_date_and_keeps_the_edits():
+def test_table_shows_an_unclear_date_at_once_and_keeps_the_edits():
     job = _scanned_job()
     at = _page()
     at.radio(key="review_view").set_value("Table").run()
     at.session_state["t_left_0"] = {"edited_rows": {0: {"Date": "Spring 2024"}}}
-    at.run()
-    _buttons(at)["Save edits"].click().run()
+    at.run()                                            # no Save needed to see it
     assert "Type dates as March 15, 2024" in at.error[0].value
-    assert "Save edits" in _buttons(at) and "date" not in _junk(job)
-    _buttons(at)["Cancel"].click().run()
-    assert not at.error
+    assert _buttons(at)["Save edits"].disabled and "date" not in _junk(job)
+    at.session_state["t_left_0"] = {"edited_rows": {0: {"Date": "March 15 2024"}}}
+    at.run()
+    assert not at.error and not _buttons(at)["Save edits"].disabled
+    _buttons(at)["Save edits"].click().run()
+    assert _junk(job)["date"] == "2024-03-15"
+
+
+def test_every_unclear_table_date_is_named():
+    import app as page
+    message = page._bad_dates({0: {"Date": "Spring 2024"}, 1: {"Date": "March 2024"},
+                               2: {"Date": "Febuary 2024"}})
+    assert message.startswith('"Spring 2024", "Febuary 2024" are not dates')
+    assert page._bad_dates({0: {"Date": "x"}}).startswith('"x" is not a date')
+    assert page._bad_dates({0: {"Date": "2024"}, 1: {"Title": "New"}}) is None
 
 
 def test_card_date_boxes_save_one_form_and_refuse_impossible_dates():
@@ -736,9 +747,10 @@ def test_card_date_boxes_save_one_form_and_refuse_impossible_dates():
     at.selectbox(key=f"edit_month_{k}").set_value(2).run()
     at.text_input(key=f"edit_year_{k}").input("2024")
     at.selectbox(key=f"edit_day_{k}").set_value(30).run()
-    _buttons(at)["Save edits"].click().run()
-    assert "February has no day 30." in at.error[0].value and "date" not in p
+    assert "February has no day 30." in at.error[0].value          # shown before Save
+    assert _buttons(at)["Save edits"].disabled and "date" not in p
     at.selectbox(key=f"edit_day_{k}").set_value(29).run()
+    assert not at.error
     _buttons(at)["Save edits"].click().run()
     assert p["date"] == "2024-02-29"
     assert "**Date:** February 29, 2024" in _text(at)
@@ -751,9 +763,10 @@ def test_card_month_needs_a_year():
     at = _page()
     _buttons(at)["Edit"].click().run()
     k = zlib.crc32(p["url"].encode())
+    assert not at.error                                 # nothing wrong yet
     at.selectbox(key=f"edit_month_{k}").set_value(5).run()
-    _buttons(at)["Save edits"].click().run()
-    assert "Add the year." in at.error[0].value and "date" not in p
+    assert "Add the year." in at.error[0].value and _buttons(at)["Save edits"].disabled
+    assert "date" not in p
 
 
 # ── Unsaved edits ────────────────────────────────────────────────────────────
@@ -795,7 +808,7 @@ def test_a_saved_table_no_longer_counts_as_unsaved():
     assert not _upload_button(at).disabled
 
 
-def test_a_changed_date_box_clears_the_old_date_error():
+def test_a_bad_year_shows_when_the_box_is_left_and_clears_when_fixed():
     import zlib
     job = _scanned_job()
     p = _junk(job)
@@ -803,7 +816,6 @@ def test_a_changed_date_box_clears_the_old_date_error():
     _buttons(at)["Edit"].click().run()
     k = zlib.crc32(p["url"].encode())
     at.text_input(key=f"edit_year_{k}").input("24").run()
-    _buttons(at)["Save edits"].click().run()
     assert at.error and "four digits" in at.error[0].value
     at.text_input(key=f"edit_year_{k}").input("2024").run()
     assert not at.error
