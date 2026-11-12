@@ -29,7 +29,7 @@ Every upload to Zotero includes the source metadata, a PDF (where possible), and
 
 ## Maintenance
 
-Package versions are pinned in `requirements.txt`. Dependabot checks for updates every Sunday morning and merges them on its own once the tests pass. An update that fails the tests stays open as a pull request.
+Package versions are pinned in `requirements.txt` and are not updated on a schedule. When a package has a known security problem, Dependabot emails the repository owner and opens a pull request with the fix, which merges on its own once the tests pass. One that fails the tests stays open. To update every package together, rebuild the pins with the command at the top of `requirements.txt` (add `--upgrade`), run the tests, and do one test upload before merging.
 
 A monthly GitHub check confirms the outside services the app relies on still respond as expected. It emails the repository owner only if something fails.
 
@@ -41,5 +41,5 @@ If the default Claude model is retired, the app switches to the newest Haiku mod
 
 - `app.py`: the page.
 - `slack_to_zotero/`: reading the Slack export, looking up each source, checking Zotero for duplicates, and uploading.
-- `tests/`: run on every push and before each Dependabot merge.
+- `tests/`: run on every pull request and every push to main.
 - `tools/save_search.py`: saves a finished search to a file, which can be uploaded in step 1 to show those results again without searching. For testing changes to the page.
