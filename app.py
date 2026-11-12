@@ -502,12 +502,13 @@ def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
         },
     )
     changes = st.session_state.get(key, {}).get("edited_rows", {})
+    edited = any(set(c) - {"Select"} for c in changes.values())
+    # Checked on every change, so a bad date shows as soon as the cell is left.
+    problem = _bad_dates(changes) if edited else None
+    if problem:
+        st.error(problem)
     bar = st.container(horizontal=True)
-    if any(set(c) - {"Select"} for c in changes.values()):
-        # Checked on every change, so a bad date shows as soon as the cell is left.
-        problem = _bad_dates(changes)
-        if problem:
-            st.error(problem)
+    if edited:
         bar.button("Save edits", type="primary", key=f"{name}_save", disabled=bool(problem),
                    on_click=_save_table, args=(job, urls, key))
         bar.button("Cancel", key=f"{name}_cancel", on_click=_bump_table)
