@@ -909,8 +909,8 @@ def step_scan(job: scan.Job | None) -> None:
             st.caption("Metadata found. These are uploaded unless moved to Review or removed.")
             _item_table(job, shown_ready, f"t_ready_{suffix}", locked, "ready",
                         show_status=uploaded_any)
-        elif not ready:
-            st.caption("Nothing ready to upload.")
+        else:
+            st.caption("No matches." if ready else "Nothing ready to upload.")
 
     review_section(job, shown_review, locked, review)
 

@@ -173,6 +173,8 @@ def test_search_filters_the_results():
     assert "No matches." in _text(at) and "Nothing to review." not in _text(at)
     at.text_input(key="results_query").input("nothing matches this").run()
     assert "Ready (0 of 1)" in [e.label for e in at.expander]
+    assert _text(at).count("No matches.") == 2          # Ready and Review
+    assert "Nothing ready to upload." not in _text(at)
 
 
 # ── Review cards ──────────────────────────────────────────────────────────────
