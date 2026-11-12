@@ -384,17 +384,23 @@ def _save_card(job: scan.Job, p: dict) -> None:
     _stop_editing()
 
 
-def review_section(job: scan.Job, items: list[dict], locked: bool) -> None:
+def review_section(job: scan.Job, items: list[dict], locked: bool,
+                   all_items: list[dict] | None = None) -> None:
     """Review in two collapsible parts: items still to decide (as cards or
     an editable table) and removed items. Items marked ready for upload are
-    shown under Ready."""
+    shown under Ready. `items` are those matching the search; `all_items`
+    all of them, for the counts."""
+    all_items = items if all_items is None else all_items
     undecided = [q for q in items if not q.get("decision")]
     removed = [q for q in items if q.get("decision") == "removed"]
+    all_undecided = [q for q in all_items if not q.get("decision")]
+    all_removed = [q for q in all_items if q.get("decision") == "removed"]
 
-    with st.expander(f"Left to review ({len(undecided)})", expanded=True,
+    with st.expander(f"Left to review ({_count(undecided, all_undecided)})", expanded=True,
                      key="exp_left"):
         if not undecided:
-            st.caption("All items reviewed." if items else "Nothing to review.")
+            st.caption("No matches." if all_undecided else
+                       "All items reviewed." if all_items else "Nothing to review.")
         else:
             st.caption("Could not be identified, or probably not a source. "
                        "Only items marked ready for upload are uploaded.")
@@ -405,23 +411,27 @@ def review_section(job: scan.Job, items: list[dict], locked: bool) -> None:
                 _card(job, undecided, locked)
             else:
                 _review_table(job, undecided, locked)
-    _decided_table("Removed", removed, job, locked, "exp_removed")
+    _decided_table("Removed", removed, all_removed, job, locked, "exp_removed")
 
 
-def _decided_table(label: str, items: list[dict], job: scan.Job, locked: bool,
-                   key: str) -> None:
+def _decided_table(label: str, items: list[dict], all_items: list[dict], job: scan.Job,
+                   locked: bool, key: str) -> None:
     """A collapsed table of removed items; Undo sends selected rows back."""
-    with st.expander(f"{label} ({len(items)})", key=key):
+    with st.expander(f"{label} ({_count(items, all_items)})", key=key):
         if not items:
-            st.caption("None yet.")
+            st.caption("No matches." if all_items else "None yet.")
             return
         _item_table(job, items, f"t_{key}", locked, "decided")
 
 
 def _tables_have_unsaved_edits() -> bool:
-    """Whether a table has edited cells not yet saved (ticks don't count)."""
+    """Whether a table has edited cells not yet saved (ticks don't count).
+    Only tables of the current version count: after a save, the replaced
+    table's edits stay in session state until the page is next drawn."""
+    version = f"_{st.session_state.get('table_version', 0)}"
     for key, state in st.session_state.items():
-        if isinstance(key, str) and key.startswith("t_") and isinstance(state, dict):
+        if isinstance(key, str) and key.startswith("t_") and key.endswith(version) \
+                and isinstance(state, dict):
             if any(set(change) - {"Select"} for change in state.get("edited_rows", {}).values()):
                 return True
     return False
@@ -699,23 +709,29 @@ def _date_boxes(p: dict, k: int) -> None:
     chosen: one fixed form for every date."""
     year, month, day = metadata.date_parts(p.get("date"))
     c1, c2, c3, _ = st.columns([1, 1.4, 1, 2.6])
-    c1.text_input("**Year**", value=year, key=f"edit_year_{k}", max_chars=4)
-    c2.selectbox("**Month**", [None, *range(1, 13)], index=month or 0,
+    c1.text_input("**Year**", value=year, key=f"edit_year_{k}", max_chars=4,
+                  on_change=_clear_date_error)
+    c2.selectbox("**Month**", range(13), index=month or 0, on_change=_clear_date_error,
                  key=f"edit_month_{k}",
                  format_func=lambda m: metadata.MONTH_NAMES[m - 1] if m else "Not set")
     no_month = not st.session_state.get(f"edit_month_{k}", month)
-    c3.selectbox("**Day**", [None, *range(1, 32)], index=day or 0, key=f"edit_day_{k}",
+    c3.selectbox("**Day**", range(32), index=day or 0, key=f"edit_day_{k}",
+                 on_change=_clear_date_error,
                  disabled=no_month, format_func=lambda d: str(d) if d else "Not set")
     if st.session_state.get("date_error"):
         st.error(st.session_state.date_error)
+
+
+def _clear_date_error() -> None:
+    st.session_state.pop("date_error", None)
 
 
 def _typed_card_date(k: int) -> str | None:
     """The card's date boxes as a stored date. Raises ValueError with a
     message for the page."""
     year = (st.session_state.get(f"edit_year_{k}") or "").strip()
-    month = st.session_state.get(f"edit_month_{k}")
-    day = st.session_state.get(f"edit_day_{k}") if month else None
+    month = st.session_state.get(f"edit_month_{k}") or None
+    day = (st.session_state.get(f"edit_day_{k}") or None) if month else None
     if not year:
         if month:
             raise ValueError("Add the year.")
@@ -896,7 +912,7 @@ def step_scan(job: scan.Job | None) -> None:
         elif not ready:
             st.caption("Nothing ready to upload.")
 
-    review_section(job, shown_review, locked)
+    review_section(job, shown_review, locked, review)
 
     if existing:
         with st.expander(f"Already in Zotero ({len(existing)})"):
@@ -962,7 +978,10 @@ def step_upload(job: scan.Job | None) -> None:
         st.caption(f"{n_selected} {what}.")
         label = "Retry failed" if failed and n_selected == len(failed) else \
             f"Upload {n_selected} ready {'item' if n_selected == 1 else 'items'} to Zotero"
-        if st.button(label, type="primary", disabled=not zotero_ready()):
+        editing = _unsaved_edits(job)
+        if editing:
+            st.caption("Save or cancel your edits to upload.")
+        if st.button(label, type="primary", disabled=not zotero_ready() or editing):
             unmarked = _left_out(job)
             st.session_state.pop("confirm_clear_results", None)   # one dialog at a time
             if unmarked:
@@ -972,6 +991,15 @@ def step_upload(job: scan.Job | None) -> None:
                 st.rerun()
     elif not has_uploaded:
         st.caption("Nothing selected to upload.")
+
+
+def _unsaved_edits(job: scan.Job) -> bool:
+    """Whether a table or a card has edits not yet saved, which an upload
+    would leave out. A card counts only while its item can still be edited."""
+    url = st.session_state.get("editing_url")
+    card = bool(url) and any(p["url"] == url and not p.get("zotero_key")
+                             for p in job.items(scan.REVIEW))
+    return card or _tables_have_unsaved_edits()
 
 
 def _left_out(job: scan.Job) -> int:

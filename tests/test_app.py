@@ -169,7 +169,8 @@ def test_search_filters_the_results():
     at = _page()
     at.text_input(key="results_query").input("paper").run()
     labels = [e.label for e in at.expander]
-    assert "Ready (1)" in labels and "Left to review (0)" in labels
+    assert "Ready (1)" in labels and "Left to review (0 of 1)" in labels
+    assert "No matches." in _text(at) and "Nothing to review." not in _text(at)
     at.text_input(key="results_query").input("nothing matches this").run()
     assert "Ready (0 of 1)" in [e.label for e in at.expander]
 
@@ -751,3 +752,71 @@ def test_card_month_needs_a_year():
     at.selectbox(key=f"edit_month_{k}").set_value(5).run()
     _buttons(at)["Save edits"].click().run()
     assert "Add the year." in at.error[0].value and "date" not in p
+
+
+# ── Unsaved edits ────────────────────────────────────────────────────────────
+
+def _upload_button(at):
+    return next(b for b in at.button if b.label.startswith("Upload "))
+
+
+def test_upload_waits_while_a_card_is_being_edited():
+    _scanned_job()
+    at = _page()
+    assert not _upload_button(at).disabled
+    _buttons(at)["Edit"].click().run()
+    assert _upload_button(at).disabled
+    assert "Save or cancel your edits to upload." in _text(at)
+    _buttons(at)["Cancel"].click().run()
+    assert not _upload_button(at).disabled
+
+
+def test_upload_waits_while_a_table_has_unsaved_edits():
+    _scanned_job()
+    at = _page()
+    at.radio(key="review_view").set_value("Table").run()
+    at.session_state["t_left_0"] = {"edited_rows": {0: {"Title": "New"}}}
+    at.run()
+    assert _upload_button(at).disabled
+    at.session_state["t_left_0"] = {"edited_rows": {0: {"Select": True}}}    # ticks aren't edits
+    at.run()
+    assert not _upload_button(at).disabled
+
+
+def test_a_saved_table_no_longer_counts_as_unsaved():
+    _scanned_job()
+    at = _page()
+    at.session_state["t_left_0"] = {"edited_rows": {0: {"Title": "New"}}}   # replaced table
+    at.session_state["table_version"] = 1
+    at.run()
+    assert not at.text_input(key="results_query").disabled
+    assert not _upload_button(at).disabled
+
+
+def test_a_changed_date_box_clears_the_old_date_error():
+    import zlib
+    job = _scanned_job()
+    p = _junk(job)
+    at = _page()
+    _buttons(at)["Edit"].click().run()
+    k = zlib.crc32(p["url"].encode())
+    at.text_input(key=f"edit_year_{k}").input("24").run()
+    _buttons(at)["Save edits"].click().run()
+    assert at.error and "four digits" in at.error[0].value
+    at.text_input(key=f"edit_year_{k}").input("2024").run()
+    assert not at.error
+
+
+def test_empty_month_and_day_read_not_set():
+    import zlib
+    job = _scanned_job()
+    k = zlib.crc32(_junk(job)["url"].encode())
+    at = _page()
+    _buttons(at)["Edit"].click().run()
+    month, day = at.selectbox(key=f"edit_month_{k}"), at.selectbox(key=f"edit_day_{k}")
+    assert month.value == 0 and day.value == 0
+    assert month.format_func(0) == "Not set" and day.format_func(0) == "Not set"
+    at.text_input(key=f"edit_year_{k}").input("2024")
+    month.set_value(3).run()
+    _buttons(at)["Save edits"].click().run()
+    assert _junk(job)["date"] == "2024-03"                 # day "Not set" is left off
