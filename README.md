@@ -26,20 +26,3 @@ Every upload to Zotero includes the source metadata, a PDF (where possible), and
 | No metadata found | No lookup recognized the link. |
 | Moved from Ready | It was moved from Ready to Review by hand. |
 | Not searched, Error during search | The search hit an error before reaching this item. Searching again usually fixes it. |
-
-## Maintenance
-
-Package versions are pinned in `requirements.txt` and are not updated on a schedule. When a package has a known security problem, Dependabot emails the repository owner and opens a pull request with the fix, which merges on its own once the tests pass. One that fails the tests stays open. To update every package together, rebuild the pins with the command at the top of `requirements.txt` (add `--upgrade`), run the tests, and do one test upload before merging.
-
-A monthly GitHub check confirms the outside services the app relies on still respond as expected. It emails the repository owner only if something fails.
-
-Python 3.14 stops receiving security updates in October 2030, and Streamlit then moves apps to a newer version. Before then, delete the app and deploy it again on the newest Python version offered, and update the two Python versions in `pyproject.toml`.
-
-If the default Claude model is retired, the app switches to the newest Haiku model on its own.
-
-## Files
-
-- `app.py`: the page.
-- `slack_to_zotero/`: reading the Slack export, looking up each source, checking Zotero for duplicates, and uploading.
-- `tests/`: run on every pull request and every push to main.
-- `tools/save_search.py`: saves a finished search to a file, which can be uploaded in step 1 to show those results again without searching. For testing changes to the page.
