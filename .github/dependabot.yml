@@ -1,23 +1,18 @@
-# Weekly update checks, early Sunday morning so an update (which redeploys the
-# app on Streamlit Cloud) doesn't land in the middle of someone's review.
-# All package updates are grouped into one pull request, which merges on its
-# own once the tests pass (see workflows/dependabot-automerge.yml). If the
-# tests fail, it stays open. Security fixes are opened as soon as they are
-# published and merge the same way.
+# Python packages stay at the versions pinned in requirements.txt. There are no
+# weekly package updates: Dependabot edits the pins one at a time, which can
+# break packages that must match (pydantic and pydantic-core, for example).
+# Security fixes still come: the repository's Dependabot alerts email the
+# owner, and its security updates open a pull request that merges on its own
+# once the tests pass (see workflows/dependabot-automerge.yml).
+#
+# To update every package together, rebuild the pins with the uv command at
+# the top of requirements.txt (add --upgrade), run the tests, and do one test
+# upload on staging before merging.
+#
+# GitHub Actions versions are still updated weekly, early Sunday morning, so
+# the Tests and Monthly check workflows keep running.
 version: 2
 updates:
-  - package-ecosystem: pip
-    directory: "/"
-    schedule:
-      interval: weekly
-      day: sunday
-      time: "03:00"
-      timezone: America/New_York
-    groups:
-      python-packages:
-        patterns: ["*"]
-    open-pull-requests-limit: 5
-
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
