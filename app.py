@@ -698,8 +698,8 @@ def _pdf_edit(p: dict, k: int) -> None:
 def _edit_fields(p: dict) -> None:
     """The card's details as inputs, in place of the plain text."""
     k = zlib.crc32(p["url"].encode())      # one set of inputs per item
-    title = st.text_input("**Title**", value=p.get("title") or p.get("slack_file_name") or "",
-                          key=f"edit_title_{k}")
+    st.text_input("**Title**", value=p.get("title") or p.get("slack_file_name") or "",
+                  key=f"edit_title_{k}")
     _author_rows(p, k)
     _date_boxes(p, k)
     c2, c3 = st.columns([2, 3])
