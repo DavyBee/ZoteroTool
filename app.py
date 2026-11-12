@@ -36,6 +36,8 @@ if getattr(sys, "_slack_to_zotero_code", None) != code_stamp():
     sys._slack_to_zotero_code = code_stamp()
 
 from slack_to_zotero import config  # noqa: E402
+from slack_to_zotero import metadata  # noqa: E402
+from slack_to_zotero import pdf_storage  # noqa: E402
 from slack_to_zotero import scan  # noqa: E402
 from slack_to_zotero import zotero_client  # noqa: E402
 from slack_to_zotero import zotero_index  # noqa: E402
@@ -341,8 +343,12 @@ def _stop_editing() -> None:
     st.session_state.pop("editing_url", None)
     # The author boxes too, so a later edit starts from the saved names.
     for key in [k for k in st.session_state
-                if str(k).startswith(("edit_rows_", "edit_next_", "edit_first_", "edit_last_"))]:
+                if str(k).startswith(("edit_rows_", "edit_next_", "edit_first_", "edit_last_",
+                                      "edit_pdf_drop_"))]:
         del st.session_state[key]
+    st.session_state.pop("pdf_error", None)
+    # A new key empties the PDF box for the next edit.
+    st.session_state.pdf_pick = st.session_state.get("pdf_pick", 0) + 1
 
 
 def _start_editing(url: str) -> None:
@@ -352,27 +358,47 @@ def _start_editing(url: str) -> None:
 def _save_card(job: scan.Job, p: dict) -> None:
     k = zlib.crc32(p["url"].encode())
     get = lambda name: (st.session_state.get(f"edit_{name}_{k}") or "").strip()
+    try:
+        date = _typed_card_date(k)
+    except ValueError:
+        return                                         # the message is already shown
+    picked = st.session_state.get(_pdf_key(k))
+    if picked is not None:
+        try:
+            path, size = pdf_storage.save_attached_pdf(picked.getvalue())
+        except ValueError as exc:
+            st.session_state.pdf_error = str(exc)      # stay in edit; nothing saved
+            return
+        job.attach_pdf(p["url"], path, size, picked.name)
+    elif st.session_state.get(f"edit_pdf_drop_{k}"):
+        job.attach_pdf(p["url"], None)
     job.edit(p["url"], {
         "title": get("title") or None,
         "authors": _typed_authors(k),
-        "year": get("year") or None,
+        "date": date,
         "item_type": st.session_state.get(f"edit_type_{k}") or p.get("item_type"),
         "journal": get("journal") or None})
     _bump_table()
     _stop_editing()
 
 
-def review_section(job: scan.Job, items: list[dict], locked: bool) -> None:
+def review_section(job: scan.Job, items: list[dict], locked: bool,
+                   all_items: list[dict] | None = None) -> None:
     """Review in two collapsible parts: items still to decide (as cards or
     an editable table) and removed items. Items marked ready for upload are
-    shown under Ready."""
+    shown under Ready. `items` are those matching the search; `all_items`
+    all of them, for the counts."""
+    all_items = items if all_items is None else all_items
     undecided = [q for q in items if not q.get("decision")]
     removed = [q for q in items if q.get("decision") == "removed"]
+    all_undecided = [q for q in all_items if not q.get("decision")]
+    all_removed = [q for q in all_items if q.get("decision") == "removed"]
 
-    with st.expander(f"Left to review ({len(undecided)})", expanded=True,
+    with st.expander(f"Left to review ({_count(undecided, all_undecided)})", expanded=True,
                      key="exp_left"):
         if not undecided:
-            st.caption("All items reviewed." if items else "Nothing to review.")
+            st.caption("No matches." if all_undecided else
+                       "All items reviewed." if all_items else "Nothing to review.")
         else:
             st.caption("Could not be identified, or probably not a source. "
                        "Only items marked ready for upload are uploaded.")
@@ -383,23 +409,27 @@ def review_section(job: scan.Job, items: list[dict], locked: bool) -> None:
                 _card(job, undecided, locked)
             else:
                 _review_table(job, undecided, locked)
-    _decided_table("Removed", removed, job, locked, "exp_removed")
+    _decided_table("Removed", removed, all_removed, job, locked, "exp_removed")
 
 
-def _decided_table(label: str, items: list[dict], job: scan.Job, locked: bool,
-                   key: str) -> None:
+def _decided_table(label: str, items: list[dict], all_items: list[dict], job: scan.Job,
+                   locked: bool, key: str) -> None:
     """A collapsed table of removed items; Undo sends selected rows back."""
-    with st.expander(f"{label} ({len(items)})", key=key):
+    with st.expander(f"{label} ({_count(items, all_items)})", key=key):
         if not items:
-            st.caption("None yet.")
+            st.caption("No matches." if all_items else "None yet.")
             return
         _item_table(job, items, f"t_{key}", locked, "decided")
 
 
 def _tables_have_unsaved_edits() -> bool:
-    """Whether a table has edited cells not yet saved (ticks don't count)."""
+    """Whether a table has edited cells not yet saved (ticks don't count).
+    Only tables of the current version count: after a save, the replaced
+    table's edits stay in session state until the page is next drawn."""
+    version = f"_{st.session_state.get('table_version', 0)}"
     for key, state in st.session_state.items():
-        if isinstance(key, str) and key.startswith("t_") and isinstance(state, dict):
+        if isinstance(key, str) and key.startswith("t_") and key.endswith(version) \
+                and isinstance(state, dict):
             if any(set(change) - {"Select"} for change in state.get("edited_rows", {}).values()):
                 return True
     return False
@@ -427,7 +457,7 @@ def ready_items(ready: list[dict], review: list[dict]) -> list[dict]:
 def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
                 mode: str, show_status: bool = False) -> None:
     """Items as an editable table: tick rows in the first column, then act on
-    them with the buttons below. Title, authors, year, and journal can be
+    them with the buttons below. Title, authors, date, and journal can be
     changed in place and are kept with Save edits. `mode` is "ready",
     "left" (to review), or "decided" (removed)."""
     rows = []
@@ -436,13 +466,14 @@ def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
         if show_status:
             row["Status"] = _status(p)
         if mode != "ready":
+            # Summary early: the table scrolls sideways, and a last column
+            # can't be dragged wider (its edge is the table's edge).
             row["Reason"] = p.get("reason", "")
+            row["Summary"] = p.get("summary") or ""
         row.update({"Title": p.get("title") or p.get("slack_file_name") or "",
                     "Authors": "; ".join(p.get("authors") or []),
-                    "Year": p.get("year") or "", "Journal": p.get("journal") or ""})
-        if mode != "ready":
-            row["Summary"] = p.get("summary") or ""
-        else:
+                    "Date": metadata.format_date(p.get("date")), "Journal": p.get("journal") or ""})
+        if mode == "ready":
             row["Added by"] = "User" if p.get("decision") else "Search"
         rows.append(row)
     urls = [p["url"] for p in items]
@@ -464,16 +495,21 @@ def _item_table(job: scan.Job, items: list[dict], name: str, locked: bool,
             "Authors": st.column_config.TextColumn("Authors (Last, First; Last, First; ...)",
                                                    width=320 if ready else 240,
                                                    help="Separate authors with semicolons"),
-            "Year": st.column_config.TextColumn(width=55),
+            "Date": st.column_config.TextColumn(width=135, help=metadata.TYPED_DATE_HELP),
             "Journal": st.column_config.TextColumn(width=170),
-            "Summary": st.column_config.TextColumn(width=240),
+            "Summary": st.column_config.TextColumn(width=300),
             "Added by": st.column_config.TextColumn(width=75),
         },
     )
     changes = st.session_state.get(key, {}).get("edited_rows", {})
+    edited = any(set(c) - {"Select"} for c in changes.values())
+    # Checked on every change, so a bad date shows as soon as the cell is left.
+    problem = _bad_dates(changes) if edited else None
+    if problem:
+        st.error(problem)
     bar = st.container(horizontal=True)
-    if any(set(c) - {"Select"} for c in changes.values()):
-        bar.button("Save edits", type="primary", key=f"{name}_save",
+    if edited:
+        bar.button("Save edits", type="primary", key=f"{name}_save", disabled=bool(problem),
                    on_click=_save_table, args=(job, urls, key))
         bar.button("Cancel", key=f"{name}_cancel", on_click=_bump_table)
         return
@@ -517,24 +553,46 @@ def table_action(job: scan.Job, action: str, items: list[dict]) -> None:
 
 
 def _save_table(job: scan.Job, urls: list[str], key: str) -> None:
-    apply_review_edits(job, urls, st.session_state[key]["edited_rows"])
-    _bump_table()
+    if apply_review_edits(job, urls, st.session_state[key]["edited_rows"]) is None:
+        _bump_table()                                  # else keep the edits to fix
 
 
-def apply_review_edits(job: scan.Job, urls: list[str], edited_rows: dict) -> None:
-    """Save details typed into a review table."""
+def _bad_dates(edited_rows: dict) -> str | None:
+    """The message for every typed date the table can't read, or None."""
+    bad = []
+    for change in edited_rows.values():
+        if "Date" in change:
+            try:
+                metadata.parse_typed_date(change["Date"] or "")
+            except ValueError:
+                bad.append(f'"{change["Date"].strip()}"')
+    if not bad:
+        return None
+    what = f"{bad[0]} is not a date" if len(bad) == 1 else f"{', '.join(bad)} are not dates"
+    return f"{what} the table can read. {metadata.TYPED_DATE_HELP}"
+
+
+def apply_review_edits(job: scan.Job, urls: list[str], edited_rows: dict) -> str | None:
+    """Save details typed into a review table. If a typed date is unclear,
+    nothing is saved and the message for the page is returned."""
+    problem = _bad_dates(edited_rows)
+    if problem:
+        return problem
+    dates = {row: metadata.parse_typed_date(change["Date"] or "")
+             for row, change in edited_rows.items() if "Date" in change}
     for row, change in edited_rows.items():
         fields = {}
         if "Title" in change:
             fields["title"] = change["Title"].strip() or None
         if "Authors" in change:
             fields["authors"] = [a.strip() for a in change["Authors"].split(";") if a.strip()]
-        if "Year" in change:
-            fields["year"] = change["Year"].strip() or None
+        if "Date" in change:
+            fields["date"] = dates[row]
         if "Journal" in change:
             fields["journal"] = change["Journal"].strip() or None
         if fields:
             job.edit(urls[int(row)], fields)
+    return None
 
 
 def mark_for_upload(job: scan.Job, items: list[dict]) -> None:
@@ -574,7 +632,7 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
             lines = [
                 _field("Title", p.get("title") or p.get("slack_file_name")),
                 _field("Authors", _all_authors(p.get("authors") or [])),
-                _field("Year", p.get("year")),
+                _field("Date", metadata.format_date(p.get("date"))),
                 _field("Website" if p.get("item_type") == "webpage" else "Journal",
                        p.get("journal") or (scan.site_name(p["url"])
                                             if p.get("item_type") == "webpage" else None)),
@@ -594,12 +652,16 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
             else:
                 body = "*(No message)*"
             lines.append(f"**Original Slack message:** {body}")
+        if not editing and p.get("local_pdf_path"):
+            lines.append(f"**PDF:** {_md(p['attached_pdf_name'])}" if p.get("attached_pdf_name")
+                         else "**PDF:** Found by the search")
         # One block with line breaks keeps the card compact.
         st.markdown("  \n".join(lines))
 
         actions = st.container(horizontal=True)
         if editing:
             actions.button("Save edits", type="primary", key="card_save",
+                           disabled=bool(_card_date_error(zlib.crc32(p["url"].encode()))),
                            on_click=_save_card, args=(job, p))
             actions.button("Cancel", key="card_cancel", on_click=_stop_editing)
             return
@@ -612,23 +674,85 @@ def _card(job: scan.Job, items: list[dict], locked: bool) -> None:
                        on_click=_decide, args=(job, items, i, "removed"))
 
 
-def _edit_fields(p: dict) -> dict:
+def _pdf_key(k: int) -> str:
+    return f"edit_pdf_{k}_{st.session_state.get('pdf_pick', 0)}"
+
+
+def _pdf_edit(p: dict, k: int) -> None:
+    """In Edit: the attached PDF with Remove, or a box to attach one. Like
+    the other fields, it changes only on Save edits."""
+    if p.get("attached_pdf_name") and not st.session_state.get(f"edit_pdf_drop_{k}"):
+        row = st.container(horizontal=True, vertical_alignment="center")
+        row.markdown(f"**PDF:** {_md(p['attached_pdf_name'])}")
+        row.button("Remove PDF", key=f"edit_pdf_remove_{k}",
+                   on_click=st.session_state.__setitem__, args=(f"edit_pdf_drop_{k}", True))
+    else:
+        found = p.get("local_pdf_path") and not p.get("attached_pdf_name")
+        st.file_uploader("**Replace the PDF found by the search**" if found else "**Attach a PDF**",
+                         type=["pdf"], key=_pdf_key(k),
+                         on_change=st.session_state.pop, args=("pdf_error", None))
+    if st.session_state.get("pdf_error"):
+        st.error(st.session_state.pdf_error)
+
+
+def _edit_fields(p: dict) -> None:
     """The card's details as inputs, in place of the plain text."""
     k = zlib.crc32(p["url"].encode())      # one set of inputs per item
-    title = st.text_input("**Title**", value=p.get("title") or p.get("slack_file_name") or "",
-                          key=f"edit_title_{k}")
+    st.text_input("**Title**", value=p.get("title") or p.get("slack_file_name") or "",
+                  key=f"edit_title_{k}")
     _author_rows(p, k)
-    c1, c2, c3 = st.columns([1, 2, 3])
-    year = c1.text_input("**Year**", value=p.get("year") or "", key=f"edit_year_{k}")
+    _date_boxes(p, k)
+    c2, c3 = st.columns([2, 3])
     kind = p.get("item_type") if p.get("item_type") in _ITEM_TYPES else "journalArticle"
-    item_type = c2.selectbox("**Type**", _ITEM_TYPES, index=_ITEM_TYPES.index(kind),
-                             key=f"edit_type_{k}")
-    journal = c3.text_input("**Journal or website**", value=p.get("journal") or "",
-                            key=f"edit_journal_{k}")
-    return {"title": title.strip() or None,
-            "authors": _typed_authors(k),
-            "year": year.strip() or None, "item_type": item_type,
-            "journal": journal.strip() or None}
+    c2.selectbox("**Type**", _ITEM_TYPES, index=_ITEM_TYPES.index(kind), key=f"edit_type_{k}")
+    c3.text_input("**Journal or website**", value=p.get("journal") or "",
+                  key=f"edit_journal_{k}")
+    _pdf_edit(p, k)
+
+
+def _date_boxes(p: dict, k: int) -> None:
+    """Year, then an optional month, then an optional day once a month is
+    chosen: one fixed form for every date."""
+    year, month, day = metadata.date_parts(p.get("date"))
+    c1, c2, c3, _ = st.columns([1, 1.4, 1, 2.6])
+    c1.text_input("**Year**", value=year, key=f"edit_year_{k}", max_chars=4)
+    c2.selectbox("**Month**", range(13), index=month or 0, key=f"edit_month_{k}",
+                 format_func=lambda m: metadata.MONTH_NAMES[m - 1] if m else "Not set")
+    no_month = not st.session_state.get(f"edit_month_{k}", month)
+    c3.selectbox("**Day**", range(32), index=day or 0, key=f"edit_day_{k}",
+                 disabled=no_month, format_func=lambda d: str(d) if d else "Not set")
+    # Checked on every change, so a bad date shows as soon as a box is left.
+    error = _card_date_error(k)
+    if error:
+        st.error(error)
+
+
+def _card_date_error(k: int) -> str | None:
+    try:
+        _typed_card_date(k)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+def _typed_card_date(k: int) -> str | None:
+    """The card's date boxes as a stored date. Raises ValueError with a
+    message for the page."""
+    year = (st.session_state.get(f"edit_year_{k}") or "").strip()
+    month = st.session_state.get(f"edit_month_{k}") or None
+    day = (st.session_state.get(f"edit_day_{k}") or None) if month else None
+    if not year:
+        if month:
+            raise ValueError("Add the year.")
+        return None
+    if not (len(year) == 4 and year.isdigit()):
+        raise ValueError("The year should be four digits, like 2024.")
+    date = metadata.clean_date([year, month, day])
+    if not date:
+        raise ValueError("The year should be four digits, like 2024.")
+    if day and date.count("-") < 2:
+        raise ValueError(f"{metadata.MONTH_NAMES[month - 1]} has no day {day}.")
+    return date
 
 
 def _split_name(author: str) -> tuple[str, str]:
@@ -794,10 +918,10 @@ def step_scan(job: scan.Job | None) -> None:
             st.caption("Metadata found. These are uploaded unless moved to Review or removed.")
             _item_table(job, shown_ready, f"t_ready_{suffix}", locked, "ready",
                         show_status=uploaded_any)
-        elif not ready:
-            st.caption("Nothing ready to upload.")
+        else:
+            st.caption("No matches." if ready else "Nothing ready to upload.")
 
-    review_section(job, shown_review, locked)
+    review_section(job, shown_review, locked, review)
 
     if existing:
         with st.expander(f"Already in Zotero ({len(existing)})"):
@@ -863,7 +987,10 @@ def step_upload(job: scan.Job | None) -> None:
         st.caption(f"{n_selected} {what}.")
         label = "Retry failed" if failed and n_selected == len(failed) else \
             f"Upload {n_selected} ready {'item' if n_selected == 1 else 'items'} to Zotero"
-        if st.button(label, type="primary", disabled=not zotero_ready()):
+        editing = _unsaved_edits(job)
+        if editing:
+            st.caption("Save or cancel your edits to upload.")
+        if st.button(label, type="primary", disabled=not zotero_ready() or editing):
             unmarked = _left_out(job)
             st.session_state.pop("confirm_clear_results", None)   # one dialog at a time
             if unmarked:
@@ -873,6 +1000,15 @@ def step_upload(job: scan.Job | None) -> None:
                 st.rerun()
     elif not has_uploaded:
         st.caption("Nothing selected to upload.")
+
+
+def _unsaved_edits(job: scan.Job) -> bool:
+    """Whether a table or a card has edits not yet saved, which an upload
+    would leave out. A card counts only while its item can still be edited."""
+    url = st.session_state.get("editing_url")
+    card = bool(url) and any(p["url"] == url and not p.get("zotero_key")
+                             for p in job.items(scan.REVIEW))
+    return card or _tables_have_unsaved_edits()
 
 
 def _left_out(job: scan.Job) -> int:

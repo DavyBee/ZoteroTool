@@ -205,6 +205,22 @@ def _write_if_within_limit(target, body: bytes) -> Optional[tuple[str, int]]:
     return (str(target), len(body))
 
 
+def save_attached_pdf(data: bytes) -> tuple[str, int]:
+    """Save a PDF a person attached on a review card; returns (path, size).
+    Raises ValueError with a message for the page. Named by its contents, so
+    one file never replaces another."""
+    if b"%PDF" not in data[:1024]:
+        raise ValueError("This file is not a PDF.")
+    if len(data) > config.PDF_MAX_BYTES:
+        raise ValueError(f"This file is over {config.PDF_MAX_BYTES // (1024 * 1024)} MB.")
+    config.PDFS_DIR.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(data).hexdigest()[:16]
+    saved = _write_if_within_limit(config.PDFS_DIR / f"attached-{digest}.pdf", data)
+    if not saved:
+        raise ValueError("The file could not be saved. Try again.")
+    return saved
+
+
 def ensure_local_pdf(paper: dict) -> Optional[str]:
     """The paper's downloaded file, if it is still on disk."""
     path = paper.get("local_pdf_path")

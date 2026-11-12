@@ -40,7 +40,7 @@ def _scanned_job():
         if p["url"].endswith("junk"):
             return {"metadata_source": "non_paper"}
         return {"metadata_source": "crossref_doi", "title": "A Paper",
-                "authors": ["Doe, Jane"], "year": "2024"}
+                "authors": ["Doe, Jane"], "date": "2024"}
 
     papers = [{"url": "https://a.org/paper", "comments": []},
               {"url": "https://a.org/junk", "comments": []}]
@@ -169,9 +169,12 @@ def test_search_filters_the_results():
     at = _page()
     at.text_input(key="results_query").input("paper").run()
     labels = [e.label for e in at.expander]
-    assert "Ready (1)" in labels and "Left to review (0)" in labels
+    assert "Ready (1)" in labels and "Left to review (0 of 1)" in labels
+    assert "No matches." in _text(at) and "Nothing to review." not in _text(at)
     at.text_input(key="results_query").input("nothing matches this").run()
     assert "Ready (0 of 1)" in [e.label for e in at.expander]
+    assert _text(at).count("No matches.") == 2          # Ready and Review
+    assert "Nothing ready to upload." not in _text(at)
 
 
 # ── Review cards ──────────────────────────────────────────────────────────────
@@ -224,7 +227,7 @@ def test_review_card_edit_saves_the_fields_and_uploads():
     at.text_input(key=f"edit_year_{k}").input("2023")
     _buttons(at)["Save edits"].click().run()
     p = _junk(job)
-    assert (p["title"], p["authors"], p["year"]) == \
+    assert (p["title"], p["authors"], p["date"]) == \
         ("The Real Title", ["Doe, Jane", "Urban Institute"], "2023")   # empty row left out
     assert "decision" not in p and "Mark ready for upload" in _buttons(at)   # back to the card
     _buttons(at)["Mark ready for upload"].click().run()
@@ -447,7 +450,7 @@ def test_random_clicking_never_breaks_the_page(monkeypatch, seed):
         if i % 3 == 0:
             return {"metadata_source": "none"}
         return {"metadata_source": "translator", "title": f"Paper {i}",
-                "authors": ["Doe, Jane"], "year": "2024"}
+                "authors": ["Doe, Jane"], "date": "2024"}
     assert scan.start_job([{"url": f"https://a.org/{i}", "comments": []} for i in range(12)],
                           None, enrich=enrich, title_search=lambda *a: None,
                           source={"label": "export.zip"})
@@ -488,7 +491,7 @@ def test_random_table_actions_keep_results_consistent(seed):
         i = int(p["url"].rsplit("/", 1)[1])
         return ({"metadata_source": "none"} if i % 3 == 0 else
                 {"metadata_source": "translator", "title": f"Paper {i}",
-                 "authors": ["Doe, Jane"], "year": "2024"})
+                 "authors": ["Doe, Jane"], "date": "2024"})
     assert scan.start_job([{"url": f"https://a.org/{i}", "comments": []} for i in range(15)],
                           None, enrich=enrich, title_search=lambda *a: None)
     job = scan.current_job()
@@ -509,7 +512,7 @@ def test_random_table_actions_keep_results_consistent(seed):
             page.apply_review_edits(job, urls, {
                 urls.index(p["url"]): {"Title": rnd.choice(["Same", "", "  New  "]),
                                        "Authors": rnd.choice(["Doe,Jane", "", "A; B"]),
-                                       "Year": rnd.choice(["2024", "", "x"])}
+                                       "Date": rnd.choice(["2024", "", "x"])}
                 for p in ticked})
         else:
             page.table_action(job, action, ticked)
@@ -634,3 +637,200 @@ def test_removing_the_only_author_leaves_an_empty_row():
     assert boxes == {f"edit_first_{k}_1": "", f"edit_last_{k}_1": ""}
     _buttons(at)["Save edits"].click().run()
     assert _junk(job)["authors"] == []
+
+
+# ── Attaching a PDF on a review card ─────────────────────────────────────────
+
+def test_attached_pdf_is_checked_and_saved(monkeypatch, tmp_path):
+    from slack_to_zotero import config, pdf_storage
+    monkeypatch.setattr(config, "PDFS_DIR", tmp_path)
+    path, size = pdf_storage.save_attached_pdf(b"%PDF-1.7 body")
+    assert open(path, "rb").read() == b"%PDF-1.7 body" and size == 13
+    with pytest.raises(ValueError, match="not a PDF"):
+        pdf_storage.save_attached_pdf(b"<html>paywall</html>")
+    monkeypatch.setattr(config, "PDF_MAX_BYTES", 5)
+    with pytest.raises(ValueError, match="over"):
+        pdf_storage.save_attached_pdf(b"%PDF-1.7 body")
+
+
+def test_attached_pdf_replaces_the_searchs_and_removing_brings_it_back():
+    job = _scanned_job()
+    p = _junk(job)
+    p.update(local_pdf_path="/found.pdf", pdf_size_bytes=10)
+    job.attach_pdf(p["url"], "/mine.pdf", 20, "mine.pdf")
+    assert (p["local_pdf_path"], p["attached_pdf_name"]) == ("/mine.pdf", "mine.pdf")
+    job.attach_pdf(p["url"], "/other.pdf", 30, "other.pdf")     # replace again
+    job.attach_pdf(p["url"], None)
+    assert (p["local_pdf_path"], p["pdf_size_bytes"]) == ("/found.pdf", 10)
+    assert "attached_pdf_name" not in p
+    p["zotero_key"] = "K"                                        # uploaded: fixed
+    job.attach_pdf(p["url"], "/late.pdf", 1, "late.pdf")
+    assert p["local_pdf_path"] == "/found.pdf"
+
+
+def test_pdf_box_is_only_in_edit_and_remove_waits_for_save():
+    job = _scanned_job()
+    at = _page()
+    assert not at.get("file_uploader")                       # not in plain view
+    _buttons(at)["Edit"].click().run()
+    assert [u.label for u in at.get("file_uploader")] == ["**Attach a PDF**"]
+    _buttons(at)["Cancel"].click().run()
+
+    job.attach_pdf(_junk(job)["url"], "/mine.pdf", 20, "mine.pdf")
+    at.run()
+    assert r"**PDF:** mine\.pdf" in _text(at) and not at.get("file_uploader")
+    _buttons(at)["Edit"].click().run()
+    _buttons(at)["Remove PDF"].click().run()
+    assert _junk(job)["attached_pdf_name"] == "mine.pdf"    # not yet
+    assert [u.label for u in at.get("file_uploader")] == ["**Attach a PDF**"]
+    _buttons(at)["Cancel"].click().run()
+    assert _junk(job)["attached_pdf_name"] == "mine.pdf"    # Cancel keeps it
+    _buttons(at)["Edit"].click().run()
+    assert "Remove PDF" in _buttons(at)                     # Cancel forgot the removal
+    _buttons(at)["Remove PDF"].click().run()
+    _buttons(at)["Save edits"].click().run()
+    assert "attached_pdf_name" not in _junk(job)
+
+
+def test_attached_pdf_is_not_kept_in_saved_results():
+    job = _scanned_job()
+    job.attach_pdf(_junk(job)["url"], "/mine.pdf", 20, "mine.pdf")
+    papers, _ = scan.read_saved_results(scan.saved_results(job.papers, "x"))
+    assert all("attached_pdf_name" not in p and "local_pdf_path" not in p for p in papers)
+
+
+# ── Dates in one form ────────────────────────────────────────────────────────
+
+def test_table_dates_are_stored_one_way_and_unclear_ones_save_nothing():
+    import app as page
+    job = _scanned_job()
+    p = _junk(job)
+    assert page.apply_review_edits(job, [p["url"]], {0: {"Date": "March 2024"}}) is None
+    assert p["date"] == "2024-03"
+    error = page.apply_review_edits(job, [p["url"]], {0: {"Date": "05/03/2024", "Title": "New"}})
+    assert "Type dates as March 15, 2024" in error
+    assert p["date"] == "2024-03" and p.get("title") != "New"     # nothing saved
+
+
+def test_table_shows_an_unclear_date_at_once_and_keeps_the_edits():
+    job = _scanned_job()
+    at = _page()
+    at.radio(key="review_view").set_value("Table").run()
+    at.session_state["t_left_0"] = {"edited_rows": {0: {"Date": "Spring 2024"}}}
+    at.run()                                            # no Save needed to see it
+    assert "Type dates as March 15, 2024" in at.error[0].value
+    assert _buttons(at)["Save edits"].disabled and "date" not in _junk(job)
+    at.session_state["t_left_0"] = {"edited_rows": {0: {"Date": "March 15 2024"}}}
+    at.run()
+    assert not at.error and not _buttons(at)["Save edits"].disabled
+    _buttons(at)["Save edits"].click().run()
+    assert _junk(job)["date"] == "2024-03-15"
+
+
+def test_every_unclear_table_date_is_named():
+    import app as page
+    message = page._bad_dates({0: {"Date": "Spring 2024"}, 1: {"Date": "March 2024"},
+                               2: {"Date": "Febuary 2024"}})
+    assert message.startswith('"Spring 2024", "Febuary 2024" are not dates')
+    assert page._bad_dates({0: {"Date": "x"}}).startswith('"x" is not a date')
+    assert page._bad_dates({0: {"Date": "2024"}, 1: {"Title": "New"}}) is None
+
+
+def test_card_date_boxes_save_one_form_and_refuse_impossible_dates():
+    import zlib
+    job = _scanned_job()
+    p = _junk(job)
+    at = _page()
+    _buttons(at)["Edit"].click().run()
+    k = zlib.crc32(p["url"].encode())
+    assert at.selectbox(key=f"edit_day_{k}").disabled           # no month yet
+    at.selectbox(key=f"edit_month_{k}").set_value(2).run()
+    at.text_input(key=f"edit_year_{k}").input("2024")
+    at.selectbox(key=f"edit_day_{k}").set_value(30).run()
+    assert "February has no day 30." in at.error[0].value          # shown before Save
+    assert _buttons(at)["Save edits"].disabled and "date" not in p
+    at.selectbox(key=f"edit_day_{k}").set_value(29).run()
+    assert not at.error
+    _buttons(at)["Save edits"].click().run()
+    assert p["date"] == "2024-02-29"
+    assert "**Date:** February 29, 2024" in _text(at)
+
+
+def test_card_month_needs_a_year():
+    import zlib
+    job = _scanned_job()
+    p = _junk(job)
+    at = _page()
+    _buttons(at)["Edit"].click().run()
+    k = zlib.crc32(p["url"].encode())
+    assert not at.error                                 # nothing wrong yet
+    at.selectbox(key=f"edit_month_{k}").set_value(5).run()
+    assert "Add the year." in at.error[0].value and _buttons(at)["Save edits"].disabled
+    assert "date" not in p
+
+
+# ── Unsaved edits ────────────────────────────────────────────────────────────
+
+def _upload_button(at):
+    return next(b for b in at.button if b.label.startswith("Upload "))
+
+
+def test_upload_waits_while_a_card_is_being_edited():
+    _scanned_job()
+    at = _page()
+    assert not _upload_button(at).disabled
+    _buttons(at)["Edit"].click().run()
+    assert _upload_button(at).disabled
+    assert "Save or cancel your edits to upload." in _text(at)
+    _buttons(at)["Cancel"].click().run()
+    assert not _upload_button(at).disabled
+
+
+def test_upload_waits_while_a_table_has_unsaved_edits():
+    _scanned_job()
+    at = _page()
+    at.radio(key="review_view").set_value("Table").run()
+    at.session_state["t_left_0"] = {"edited_rows": {0: {"Title": "New"}}}
+    at.run()
+    assert _upload_button(at).disabled
+    at.session_state["t_left_0"] = {"edited_rows": {0: {"Select": True}}}    # ticks aren't edits
+    at.run()
+    assert not _upload_button(at).disabled
+
+
+def test_a_saved_table_no_longer_counts_as_unsaved():
+    _scanned_job()
+    at = _page()
+    at.session_state["t_left_0"] = {"edited_rows": {0: {"Title": "New"}}}   # replaced table
+    at.session_state["table_version"] = 1
+    at.run()
+    assert not at.text_input(key="results_query").disabled
+    assert not _upload_button(at).disabled
+
+
+def test_a_bad_year_shows_when_the_box_is_left_and_clears_when_fixed():
+    import zlib
+    job = _scanned_job()
+    p = _junk(job)
+    at = _page()
+    _buttons(at)["Edit"].click().run()
+    k = zlib.crc32(p["url"].encode())
+    at.text_input(key=f"edit_year_{k}").input("24").run()
+    assert at.error and "four digits" in at.error[0].value
+    at.text_input(key=f"edit_year_{k}").input("2024").run()
+    assert not at.error
+
+
+def test_empty_month_and_day_read_not_set():
+    import zlib
+    job = _scanned_job()
+    k = zlib.crc32(_junk(job)["url"].encode())
+    at = _page()
+    _buttons(at)["Edit"].click().run()
+    month, day = at.selectbox(key=f"edit_month_{k}"), at.selectbox(key=f"edit_day_{k}")
+    assert month.value == 0 and day.value == 0
+    assert month.format_func(0) == "Not set" and day.format_func(0) == "Not set"
+    at.text_input(key=f"edit_year_{k}").input("2024")
+    month.set_value(3).run()
+    _buttons(at)["Save edits"].click().run()
+    assert _junk(job)["date"] == "2024-03"                 # day "Not set" is left off

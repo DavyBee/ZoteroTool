@@ -234,9 +234,9 @@ def test_landing_page_merges_with_article_but_editions_stay_apart():
         "https://t.com/collections/x": {"title": "Where Is the Housing Shortage?",
                                         "item_type": "webpage"},
         "https://t.com/doi/10.1234/x": {"title": "Where Is the Housing Shortage?",
-                                        "year": "2025", "doi": "10.1234/x"},
-        "https://jchs.org/2023": {"title": "The State of the Nation's Housing", "year": "2023"},
-        "https://jchs.org/2024": {"title": "The State of the Nation's Housing", "year": "2024"},
+                                        "date": "2025", "doi": "10.1234/x"},
+        "https://jchs.org/2023": {"title": "The State of the Nation's Housing", "date": "2023"},
+        "https://jchs.org/2024": {"title": "The State of the Nation's Housing", "date": "2024"},
     }
     job = scan.Job(papers, None, title_search=lambda *a: None,
                    enrich=lambda p, *a: {"metadata_source": "translator", **meta[p["url"]]})
@@ -306,7 +306,7 @@ def test_article_without_authors_year_or_doi_becomes_a_web_page():
     p = {"url": "https://huduser.gov/cityscape", "item_type": "journalArticle", "title": "Cityscape"}
     scan._tidy(p)
     assert p["item_type"] == "webpage"
-    q = {"url": "https://a.org", "item_type": "journalArticle", "title": "T", "year": "2024"}
+    q = {"url": "https://a.org", "item_type": "journalArticle", "title": "T", "date": "2024"}
     scan._tidy(q)
     assert q["item_type"] == "journalArticle"
 
@@ -322,18 +322,18 @@ def _scan_with(meta):
 
 def test_web_page_merges_into_the_paper_with_its_title_even_with_another_year():
     assert _scan_with({
-        "https://t.com/collection": {"title": "Where Is the Housing Shortage?", "year": "2024",
+        "https://t.com/collection": {"title": "Where Is the Housing Shortage?", "date": "2024",
                                      "item_type": "webpage"},
-        "https://t.com/article": {"title": "Where Is the Housing Shortage?", "year": "2025",
+        "https://t.com/article": {"title": "Where Is the Housing Shortage?", "date": "2025",
                                   "authors": ["Doe, J"], "doi": "10.1234/x"},
     }) == ["https://t.com/article"]
 
 
 def test_short_titles_merge_only_with_the_same_year():
     assert len(_scan_with({
-        "https://nber.org/w1": {"title": "Rent Guarantee Insurance", "year": "2024", "authors": ["A"]},
-        "https://nber.org/w1.pdf": {"title": "Rent Guarantee Insurance", "year": "2024", "authors": ["A"]},
-        "https://nber.org/old": {"title": "Rent Guarantee Insurance", "year": "2019", "authors": ["A"]},
+        "https://nber.org/w1": {"title": "Rent Guarantee Insurance", "date": "2024", "authors": ["A"]},
+        "https://nber.org/w1.pdf": {"title": "Rent Guarantee Insurance", "date": "2024", "authors": ["A"]},
+        "https://nber.org/old": {"title": "Rent Guarantee Insurance", "date": "2019", "authors": ["A"]},
     })) == 2
 
 
@@ -414,7 +414,7 @@ def test_stop_discards_the_search():
 def test_saved_results_load_as_a_finished_search_without_lookups():
     job = scan.Job(_papers(3), None, title_search=lambda *a: None,
                    enrich=lambda p, *a: {"metadata_source": "translator", "title": f"Paper {p['url'][-1]}",
-                                         "authors": ["Doe, Jane"], "year": "2024",
+                                         "authors": ["Doe, Jane"], "date": "2024",
                                          "item_type": "journalArticle", "doi": f"10.1/{p['url'][-1]}"})
     job.start()
     _wait(job, scan.SCANNED)
@@ -433,7 +433,7 @@ def test_saved_results_load_as_a_finished_search_without_lookups():
 
 def test_html_entities_are_cleaned_from_journals_and_authors():
     p = {"title": "Rent &amp; Eviction", "journal": "City &amp; Community",
-         "authors": ["O&#39;Brien, Ann"], "item_type": "journalArticle", "year": "2024"}
+         "authors": ["O&#39;Brien, Ann"], "item_type": "journalArticle", "date": "2024"}
     scan._tidy(p)
     assert (p["title"], p["journal"], p["authors"]) == \
         ("Rent & Eviction", "City & Community", ["O'Brien, Ann"])
@@ -444,13 +444,13 @@ def test_items_edited_into_duplicates_upload_once():
         i = int(p["url"].rsplit("/", 1)[1])
         if i < 2:
             return {"metadata_source": "translator", "title": f"Paper {i}",
-                    "authors": ["Doe, Jane"], "year": "2024", "item_type": "journalArticle"}
+                    "authors": ["Doe, Jane"], "date": "2024", "item_type": "journalArticle"}
         return {"metadata_source": "none"}                   # to Review
 
     job = scan.Job(_papers(4), None, title_search=lambda *a: None, enrich=enrich)
     job.start()
     _wait(job, scan.SCANNED)
-    same = {"title": "Paper 0", "authors": ["Doe, Jane"], "year": "2024",
+    same = {"title": "Paper 0", "authors": ["Doe, Jane"], "date": "2024",
             "item_type": "journalArticle"}
     for url in ("https://a.org/2", "https://a.org/3"):        # two Review items edited
         job.edit(url, same)                                 # to match a Ready one
@@ -541,7 +541,7 @@ def test_upload_still_checks_known_zotero_items_when_zotero_cant_be_refreshed():
     job.start()
     _wait(job, scan.SCANNED)
     url = job.papers[0]["url"]
-    job.edit(url, {"title": "Known Paper", "year": "2024", "authors": ["Doe, Jane"],
+    job.edit(url, {"title": "Known Paper", "date": "2024", "authors": ["Doe, Jane"],
                    "item_type": "journalArticle"})
     job.decide(url, "edited")
     zot = FakeZotero()
@@ -552,11 +552,11 @@ def test_upload_still_checks_known_zotero_items_when_zotero_cant_be_refreshed():
 
 def test_lookup_results_with_wrong_types_are_cleaned():
     p = {"metadata_source": "llm", "title": 42, "authors": "Doe, Jane; Roe, Rich",
-         "year": 2024, "journal": ["Demography"], "volume": 12, "issue": None,
+         "date": 2024, "journal": ["Demography"], "volume": 12, "issue": None,
          "pages": {"from": 1}, "summary": 3.5, "item_type": "journalArticle"}
     scan._tidy(p)
     assert p["title"] == "42" and p["authors"] == ["Doe, Jane", "Roe, Rich"]
-    assert (p["year"], p["journal"], p["volume"], p["issue"], p["pages"], p["summary"]) == \
+    assert (p["date"], p["journal"], p["volume"], p["issue"], p["pages"], p["summary"]) == \
         ("2024", "Demography", "12", None, None, "3.5")
     q = {"authors": [None, "Doe, Jane", 5, ["x"]], "item_type": "webpage"}
     scan._tidy(q)
@@ -617,7 +617,7 @@ def test_search_time_leaves_out_time_paused():
 
 def test_attachment_names_have_no_slashes_from_authors_or_years():
     from slack_to_zotero.zotero_client import _file_name
-    name = _file_name({"authors": ["AC/DC Collective"], "year": "2023/24",
+    name = _file_name({"authors": ["AC/DC Collective"], "date": "2023/24",
                        "title": "Rent: A/B Tests?"}, "/tmp/x.pdf")
     assert "/" not in name and "\\" not in name and name.endswith(".pdf")
     assert _file_name({"title": "///"}, "/tmp/x.pdf") == "Full Text.pdf"
@@ -728,7 +728,7 @@ def test_searching_again_after_an_upload_cut_off_by_a_restart():
     def enrich(p, *a):
         i = p["url"].rsplit("/", 1)[1]
         return {"metadata_source": "translator", "title": f"Paper number {i} on rent",
-                "authors": ["Doe, Jane"], "year": "2024", "item_type": "journalArticle"}
+                "authors": ["Doe, Jane"], "date": "2024", "item_type": "journalArticle"}
 
     first = scan.Job(_papers(120), None, title_search=lambda *a: None, enrich=enrich)
     first.start()
@@ -839,3 +839,19 @@ def test_pause_freezes_progress_while_items_in_progress_finish():
     job.resume()
     _wait(job, scan.SCANNED)
     assert job.snapshot()["done"] == 1
+
+
+def test_saved_results_from_before_dates_still_load():
+    import json
+    old = json.dumps({scan.SAVED_MARK: 1, "label": "old",
+                      "papers": [{"url": "https://a.org", "year": "2021"}]}).encode()
+    papers, _ = scan.read_saved_results(old)
+    assert papers[0]["date"] == "2021" and "year" not in papers[0]
+
+
+def test_full_dates_upload_as_zotero_dates_and_name_files_by_year():
+    from slack_to_zotero.zotero_client import _file_name, paper_to_zotero_item
+    p = {"url": "https://a.org", "title": "T", "authors": ["Doe, Jane"],
+         "date": "2024-03-15", "item_type": "journalArticle"}
+    assert paper_to_zotero_item(p)["date"] == "2024-03-15"
+    assert _file_name(p, "/tmp/x.pdf") == "Doe 2024 - T.pdf"

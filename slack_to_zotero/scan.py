@@ -409,10 +409,10 @@ class Job:
         by_title: dict[str, list[dict]] = {}
         keep: list[dict] = []
         order = sorted(self.papers, key=lambda p: (
-            rank.get(p.get("bucket"), 3), not p.get("doi"), not p.get("year")))
+            rank.get(p.get("bucket"), 3), not p.get("doi"), not p.get("date")))
         for p in order:
             d = doi_key(p.get("doi"))
-            t, y = title_key(p.get("title")), year_of(p.get("year"))
+            t, y = title_key(p.get("title")), year_of(p.get("date"))
             target = by_doi.get(d) if d else None
             if target is None and t:
                 target = next((q for q in by_title.get(t, [])
@@ -530,6 +530,29 @@ class Job:
                         p["decision"] = "edited"
                     return
 
+    def attach_pdf(self, url: str, path: Optional[str], size: Optional[int] = None,
+                   name: Optional[str] = None) -> None:
+        """Attach a PDF a person chose to an item, in place of any the search
+        found. With path None, take it off again (the search's PDF, if there
+        was one, comes back)."""
+        with self.lock:
+            if not self._changeable():
+                return
+            for p in self.papers:
+                if p["url"] != url or p.get("bucket") not in (READY, REVIEW) \
+                        or p.get("zotero_key"):
+                    continue
+                if path:
+                    if "attached_pdf_name" not in p:
+                        p["search_pdf"] = (p.get("local_pdf_path"), p.get("pdf_size_bytes"))
+                    p.update(local_pdf_path=path, pdf_size_bytes=size,
+                             attached_pdf_name=name or "Attached PDF")
+                elif "attached_pdf_name" in p:
+                    prev_path, prev_size = p.pop("search_pdf", (None, None))
+                    p.pop("attached_pdf_name")
+                    p["local_pdf_path"], p["pdf_size_bytes"] = prev_path, prev_size
+                return
+
     def selected(self) -> list[dict]:
         with self.lock:
             return [p for p in self.papers
@@ -640,7 +663,7 @@ def _same_work(p: dict, q: dict, t: str, y: Optional[str]) -> bool:
     more), or one year unknown (four words or more). Different years are
     different versions, such as a working paper and the published article."""
     words = len(t.split())
-    qy = year_of(q.get("year"))
+    qy = year_of(q.get("date"))
     if different_versions(p.get("item_type"), q.get("item_type")):
         return False
     if not p.get("authors") and p.get("item_type") == "webpage" and words >= 3:
@@ -650,7 +673,7 @@ def _same_work(p: dict, q: dict, t: str, y: Optional[str]) -> bool:
     return words >= 4
 
 
-_TEXT_FIELDS = ("title", "year", "journal", "volume", "issue", "pages", "publisher",
+_TEXT_FIELDS = ("title", "date", "journal", "volume", "issue", "pages", "publisher",
                 "doi", "isbn", "abstract", "summary", "language")
 
 
@@ -677,7 +700,7 @@ def _as_names(value) -> list[str]:
 def _tidy(p: dict) -> None:
     """Make every field the expected type, and clean the title, journal, and
     names whichever lookup produced them (HTML tags such as <br> and entities
-    such as &amp; turn up). An "article" with no authors, no year, and no DOI
+    such as &amp; turn up). An "article" with no authors, no date, and no DOI
     is usually a journal homepage or issue page; save it as a web page."""
     for field in _TEXT_FIELDS:
         if field in p:
@@ -690,7 +713,7 @@ def _tidy(p: dict) -> None:
     if p.get("authors"):
         p["authors"] = [metadata.clean_title(a) or a for a in p["authors"]]
     if p.get("item_type") in ("journalArticle", "preprint", "conferencePaper") \
-            and not p.get("authors") and not p.get("year") and not doi_key(p.get("doi")):
+            and not p.get("authors") and not p.get("date") and not doi_key(p.get("doi")):
         p["item_type"] = "webpage"
 
 
@@ -774,7 +797,7 @@ SAVED_MARK = "slack_to_zotero_saved_results"
 _NOT_SAVED = ("bucket", "reason", "include", "decision", "was_edited", "zotero_key",
               "upload_error", "existing_key", "existing_how", "existing_url",
               "existing_title", "local_pdf_path", "pdf_size_bytes", "not_scanned",
-              "scan_error", "marked_at")
+              "scan_error", "marked_at", "attached_pdf_name", "search_pdf")
 
 
 def saved_results(papers: list[dict], label: str) -> bytes:
@@ -795,6 +818,9 @@ def read_saved_results(data: bytes) -> Optional[tuple[list[dict], str]]:
     if not isinstance(papers, list):
         return None
     papers = [p for p in papers if isinstance(p, dict) and isinstance(p.get("url"), str)]
+    for p in papers:                   # files saved before "year" became "date"
+        if "year" in p and "date" not in p:
+            p["date"] = p.pop("year")
     return papers, saved.get("label") or "Saved results"
 
 

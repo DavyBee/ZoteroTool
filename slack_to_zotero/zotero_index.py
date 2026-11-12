@@ -213,7 +213,7 @@ class LibraryIndex:
         t = title_key(paper.get("title"))
         if not t or t not in self._by_title:
             return None
-        year = year_of(paper.get("year"))
+        year = year_of(paper.get("date"))
         author = first_author(paper.get("authors") or [])
         words = len(t.split())
         kind = paper.get("item_type")
